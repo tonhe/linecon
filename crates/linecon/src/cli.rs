@@ -1,8 +1,14 @@
 //! Command-line access to the protocol engine, for scripts and for debugging a
 //! device without the UI.
 
-use std::io::{BufRead, Read, Write};
+use std::io::{IsTerminal, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
+
+use linecon_config::ConfigLocation;
+use linecon_engine::hostkeys::KnownHostsFile;
+use zeroize::Zeroize;
 
 use linecon_engine::algorithms::{AlgorithmPolicy, SshVersion};
 use linecon_engine::negotiation::{self, NegotiationFailure};
@@ -20,7 +26,7 @@ usage:
   linecon serial <line> <baud>
   linecon probe <host> [port]
 
-Type ~b on its own line to send a break, ~. to disconnect.
+At the start of a line, ~. disconnects, ~b sends a break and ~~ types a tilde.
 ";
 
 fn usage() -> i32 {
@@ -112,44 +118,213 @@ fn probe(host: &str, port: u16) -> i32 {
     }
 }
 
-fn ask(question: &str) -> String {
-    eprint!("{question}");
-    let _ = std::io::stderr().flush();
-    let mut line = String::new();
-    let _ = std::io::stdin().lock().read_line(&mut line);
-    line.trim_end_matches(['\r', '\n']).to_string()
+/// Puts the local terminal in raw mode for the life of a session, so keys reach
+/// the device as typed. Input that is not a terminal is left alone.
+struct RawMode {
+    active: bool,
+}
+
+impl RawMode {
+    fn enable() -> Self {
+        let active =
+            std::io::stdin().is_terminal() && crossterm::terminal::enable_raw_mode().is_ok();
+        Self { active }
+    }
+
+    fn restore(&self) {
+        if self.active {
+            let _ = crossterm::terminal::disable_raw_mode();
+        }
+    }
+}
+
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        self.restore();
+    }
+}
+
+/// Writes local text, with the carriage returns raw mode no longer adds for us.
+fn say(text: &str) {
+    let mut err = std::io::stderr();
+    let _ = err.write_all(text.replace('\n', "\r\n").as_bytes());
+    let _ = err.flush();
+}
+
+/// Decides where typed bytes go: one thread reads stdin, so a question and the
+/// session can never compete for the same keystroke.
+struct Input {
+    answering: AtomicBool,
+    local_echo: AtomicBool,
+    answers: Mutex<Option<mpsc::Sender<u8>>>,
+}
+
+/// Reads one answer from the keyboard while the session waits.
+fn ask(input: &Input, question: &str, echo: bool) -> Option<String> {
+    say(question);
+    let (tx, rx) = mpsc::channel();
+    *input.answers.lock().unwrap() = Some(tx);
+    input.answering.store(true, Ordering::SeqCst);
+    let mut line: Vec<u8> = Vec::new();
+    let answer = loop {
+        match rx.recv() {
+            Ok(b'\r' | b'\n') => break Some(line.clone()),
+            Ok(0x03 | 0x04) | Err(_) => break None,
+            Ok(0x7f | 0x08) => {
+                if line.pop().is_some() && echo {
+                    say("\u{8} \u{8}");
+                }
+            }
+            Ok(byte) => {
+                line.push(byte);
+                if echo {
+                    let _ = std::io::stderr().write_all(&[byte]);
+                    let _ = std::io::stderr().flush();
+                }
+            }
+        }
+    };
+    input.answering.store(false, Ordering::SeqCst);
+    *input.answers.lock().unwrap() = None;
+    say("\n");
+    let text = answer.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    line.zeroize();
+    text
+}
+
+/// Handles `~.` and `~b` at the start of a line, as ssh does with its escape.
+#[derive(Default)]
+struct Escapes {
+    mid_line: bool,
+    tilde: bool,
+}
+
+enum Typed {
+    Data(Vec<u8>),
+    Break,
+    Quit,
+}
+
+impl Escapes {
+    fn feed(&mut self, bytes: &[u8]) -> Vec<Typed> {
+        let mut out = Vec::new();
+        let mut data = Vec::new();
+        for &byte in bytes {
+            if self.tilde {
+                self.tilde = false;
+                match byte {
+                    b'.' | b'b' => {
+                        if !data.is_empty() {
+                            out.push(Typed::Data(std::mem::take(&mut data)));
+                        }
+                        out.push(if byte == b'.' {
+                            Typed::Quit
+                        } else {
+                            Typed::Break
+                        });
+                        continue;
+                    }
+                    b'~' => {
+                        data.push(b'~');
+                        self.mid_line = true;
+                        continue;
+                    }
+                    _ => data.push(b'~'),
+                }
+            } else if byte == b'~' && !self.mid_line {
+                self.tilde = true;
+                continue;
+            }
+            data.push(byte);
+            self.mid_line = !matches!(byte, b'\r' | b'\n');
+        }
+        if !data.is_empty() {
+            out.push(Typed::Data(data));
+        }
+        out
+    }
 }
 
 fn connect(settings: &Settings, policy: &AlgorithmPolicy) -> i32 {
-    let session = match Session::open(settings) {
-        Ok(session) => std::sync::Arc::new(session),
+    // "Trust and remember" has to outlive this process.
+    let location = ConfigLocation::detect();
+    match KnownHostsFile::open(&location.known_hosts_file()) {
+        Ok(store) => linecon_engine::set_hostkey_store(Arc::new(store)),
+        Err(e) => eprintln!("known hosts unavailable, keys will not be remembered: {e}"),
+    }
+
+    let mut settings = settings.clone();
+    if let Ok((cols, rows)) = crossterm::terminal::size() {
+        settings.terminal_size(cols, rows);
+    }
+    let session = match Session::open(&settings) {
+        Ok(session) => Arc::new(session),
         Err(e) => {
             eprintln!("{e}");
             return 1;
         }
     };
-
-    let input = session.clone();
-    std::thread::spawn(move || {
-        let mut stdin = std::io::stdin();
-        let mut buf = [0u8; 4096];
-        while let Ok(n) = stdin.read(&mut buf) {
-            if n == 0 {
-                input.special(Special::Eof);
-                break;
-            }
-            match &buf[..n] {
-                b"~b\n" | b"~b\r\n" => input.special(Special::Break),
-                b"~.\n" | b"~.\r\n" => std::process::exit(0),
-                data => input.send(data),
-            }
-        }
+    let raw = Arc::new(RawMode::enable());
+    let input = Arc::new(Input {
+        answering: AtomicBool::new(false),
+        local_echo: AtomicBool::new(false),
+        answers: Mutex::new(None),
     });
+
+    {
+        let session = session.clone();
+        let input = input.clone();
+        let raw = raw.clone();
+        std::thread::spawn(move || {
+            let mut stdin = std::io::stdin();
+            let mut buf = [0u8; 4096];
+            let mut escapes = Escapes::default();
+            while let Ok(n) = stdin.read(&mut buf) {
+                if n == 0 {
+                    session.special(Special::Eof);
+                    break;
+                }
+                if input.answering.load(Ordering::SeqCst) {
+                    if let Some(tx) = input.answers.lock().unwrap().as_ref() {
+                        for &byte in &buf[..n] {
+                            let _ = tx.send(byte);
+                        }
+                    }
+                    continue;
+                }
+                for typed in escapes.feed(&buf[..n]) {
+                    match typed {
+                        Typed::Data(data) => {
+                            session.send(&data);
+                            if input.local_echo.load(Ordering::Relaxed) {
+                                let mut out = std::io::stdout();
+                                let _ = out.write_all(&data);
+                                let _ = out.flush();
+                            }
+                        }
+                        Typed::Break => session.special(Special::Break),
+                        Typed::Quit => {
+                            raw.restore();
+                            std::process::exit(0);
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     let mut stdout = std::io::stdout();
     let mut failure = None;
+    let mut size = crossterm::terminal::size().ok();
     loop {
-        match session.recv_timeout(Duration::from_secs(1)) {
+        let current = crossterm::terminal::size().ok();
+        if current != size {
+            size = current;
+            if let Some((cols, rows)) = size {
+                session.resize(cols, rows);
+            }
+        }
+        match session.recv_timeout(Duration::from_millis(250)) {
             Ok(Event::Output {
                 data,
                 stderr: false,
@@ -158,27 +333,42 @@ fn connect(settings: &Settings, policy: &AlgorithmPolicy) -> i32 {
                 let _ = stdout.flush();
             }
             Ok(Event::Output { data, stderr: true }) => {
-                let _ = std::io::stderr().write_all(&data);
+                say(&String::from_utf8_lossy(&data));
             }
+            Ok(Event::EchoEdit { echo, .. }) => input.local_echo.store(echo, Ordering::Relaxed),
             Ok(Event::Prompt(prompt)) => {
-                if let Some(text) = &prompt.instruction {
-                    eprintln!("{text}");
+                if let Some(text) = prompt.instruction.as_ref().filter(|t| !t.is_empty()) {
+                    say(&format!("{text}\n"));
                 }
-                let answers: Vec<String> = prompt.fields.iter().map(|f| ask(&f.text)).collect();
-                let answers: Vec<&str> = answers.iter().map(String::as_str).collect();
-                session.answer_prompt(&answers);
+                let mut answers = Vec::new();
+                for field in &prompt.fields {
+                    match ask(&input, &field.text, field.echo) {
+                        Some(answer) => answers.push(answer),
+                        None => break,
+                    }
+                }
+                if answers.len() == prompt.fields.len() {
+                    let refs: Vec<&str> = answers.iter().map(String::as_str).collect();
+                    session.answer_prompt(&refs);
+                } else {
+                    session.cancel_prompt();
+                }
+                for answer in &mut answers {
+                    answer.zeroize();
+                }
             }
             Ok(Event::HostKey(key)) => {
-                eprintln!("{}", key.description);
-                let verdict = match ask("Trust this key? [y]es/[o]nce/[n]o: ").as_str() {
-                    "y" | "yes" => HostKeyVerdict::AcceptAndStore,
-                    "o" | "once" => HostKeyVerdict::AcceptOnce,
+                say(&format!("{}\n", key.description));
+                let answer = ask(&input, "Trust this key? [y]es/[o]nce/[n]o: ", true);
+                let verdict = match answer.as_deref().map(str::trim) {
+                    Some("y" | "yes") => HostKeyVerdict::AcceptAndStore,
+                    Some("o" | "once") => HostKeyVerdict::AcceptOnce,
                     _ => HostKeyVerdict::Reject,
                 };
                 session.answer_hostkey(verdict);
             }
             Ok(Event::WeakCrypto { description }) => {
-                eprintln!("{description}");
+                say(&format!("{description}\n"));
                 failure = Some(description);
                 session.answer_weak(false);
             }
@@ -186,9 +376,10 @@ fn connect(settings: &Settings, policy: &AlgorithmPolicy) -> i32 {
                 failure.get_or_insert(reason);
             }
             Ok(Event::Closed { exit_code, reason }) => {
+                raw.restore();
                 let reason = failure.or(reason);
                 if let Some(reason) = &reason {
-                    report_failure(reason, settings, policy);
+                    report_failure(reason, &settings, policy);
                 }
                 return exit_code.unwrap_or(i32::from(reason.is_some()));
             }
@@ -210,4 +401,41 @@ fn report_failure(reason: &str, settings: &Settings, policy: &AlgorithmPolicy) {
         .unwrap_or(22);
     let offer = negotiation::probe(host, port, Duration::from_secs(5)).ok();
     eprint!("{}", NegotiationFailure::new(reason, policy, offer));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(e: &mut Escapes, bytes: &[u8]) -> String {
+        let mut text = String::new();
+        for typed in e.feed(bytes) {
+            match typed {
+                Typed::Data(d) => text.push_str(&String::from_utf8_lossy(&d)),
+                Typed::Break => text.push_str("<BREAK>"),
+                Typed::Quit => text.push_str("<QUIT>"),
+            }
+        }
+        text
+    }
+
+    #[test]
+    fn escapes_only_work_at_line_start() {
+        let mut e = Escapes::default();
+        assert_eq!(run(&mut e, b"~."), "<QUIT>");
+        let mut e = Escapes::default();
+        assert_eq!(run(&mut e, b"ls ~.\r~b"), "ls ~.\r<BREAK>");
+    }
+
+    #[test]
+    fn tilde_passes_through_otherwise() {
+        let mut e = Escapes::default();
+        assert_eq!(run(&mut e, b"~~x"), "~x");
+        let mut e = Escapes::default();
+        assert_eq!(run(&mut e, b"~x"), "~x");
+        // Split across reads.
+        let mut e = Escapes::default();
+        assert_eq!(run(&mut e, b"~"), "");
+        assert_eq!(run(&mut e, b"."), "<QUIT>");
+    }
 }

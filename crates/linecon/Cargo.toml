@@ -14,7 +14,12 @@ eframe = { version = "0.37", default-features = false, features = ["default_font
 egui = "0.37"
 plist = "1"
 serde_json = "1"
+crossterm = "0.29"
+zeroize = "1"
 time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
 
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
