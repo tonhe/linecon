@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use alacritty_terminal::index::Point;
+use egui::text::{CCursor, CCursorRange};
 use egui::{
     pos2, vec2, Align, Align2, Color32, CornerRadius, FontId, Frame, Key, Layout as UiLayout,
     Margin, Modifiers, Panel, Rect, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui, UiBuilder,
@@ -106,6 +107,12 @@ struct PaneEntry {
     sftp: Option<SftpPane>,
     /// What an agent may do here. Starts at none and is never saved.
     agent: Access,
+    /// Opened from the quick connect box, and not saved yet.
+    quick: bool,
+    /// "Remember this login" is ticked on the prompt card.
+    remember_login: bool,
+    /// What to save if the device accepts it.
+    pending_login: Option<PendingLogin>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -132,6 +139,7 @@ enum Command {
     RunSnippet(String),
     ToggleFiles,
     ToggleAgentServer,
+    SessionSettings,
     ExportSnippets,
     SetAgentAccess(Access),
     ImportSshConfig,
@@ -177,6 +185,22 @@ pub struct App {
     dirty: bool,
     repaint: Option<Repaint>,
     selected_node: Option<Id>,
+    /// Panes to close once drawing has finished.
+    closing: Vec<PaneId>,
+    last_focus: Option<egui::Id>,
+    pending_delete: Option<Id>,
+}
+
+const QUICK_FOLDER: &str = "Quick sessions";
+const QUICK_LIMIT: usize = 25;
+
+/// A shortcut as this platform writes it.
+fn shortcut(key: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("⌘{key}")
+    } else {
+        format!("Ctrl+Shift+{key}")
+    }
 }
 
 fn terminal_id(pane: PaneId) -> egui::Id {
@@ -267,6 +291,9 @@ impl App {
             dirty: false,
             repaint: None,
             selected_node: None,
+            closing: Vec::new(),
+            last_focus: None,
+            pending_delete: None,
             vault,
             agent_view: Arc::default(),
             agent_server: None,
@@ -372,6 +399,9 @@ impl App {
             answers: Vec::new(),
             sftp: None,
             agent: Access::None,
+            quick: false,
+            remember_login: false,
+            pending_login: None,
         };
         self.panes.insert(id, entry);
         id
@@ -444,6 +474,28 @@ impl App {
         }
     }
 
+    /// Keeps tabs and panes consistent, whatever happened. A tab pointing at a pane
+    /// that no longer exists would be blank and impossible to close.
+    fn repair_tabs(&mut self) {
+        let panes = &self.panes;
+        self.tabs.retain_mut(|tab| {
+            let mut ids = Vec::new();
+            tab.layout.panes(&mut ids);
+            for id in ids.iter().filter(|id| !panes.contains_key(id)) {
+                if !tab.layout.remove(*id) {
+                    return false;
+                }
+            }
+            let mut left = Vec::new();
+            tab.layout.panes(&mut left);
+            if !left.contains(&tab.focused) {
+                tab.focused = left[0];
+            }
+            true
+        });
+        self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+    }
+
     fn run_command(&mut self, ctx: &egui::Context, command: Command) {
         let focused = self.focused_pane();
         match command {
@@ -499,6 +551,10 @@ impl App {
             Command::Open(id) => self.open_saved(id),
             Command::RunSnippet(text) => self.run_snippet(&text),
             Command::ToggleFiles => self.toggle_files(),
+            Command::SessionSettings => {
+                let scope = self.snippet_scope();
+                self.inspector = Some(scope.map_or(InspectTarget::Root, InspectTarget::Node));
+            }
             Command::ExportSnippets => self.export_snippets(),
             Command::ToggleAgentServer => {
                 self.config.mcp_enabled = !self.config.mcp_enabled;
@@ -528,6 +584,238 @@ impl App {
                     Err(e) => self.error = Some(e),
                 }
             }
+        }
+    }
+
+    /// Moving to a field selects what is in it, so typing replaces it.
+    fn select_all_on_focus(&mut self, ctx: &egui::Context) {
+        let focused = ctx.memory(|m| m.focused());
+        if focused != self.last_focus {
+            self.last_focus = focused;
+            if let Some(id) = focused {
+                if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
+                    state.cursor.set_char_range(Some(CCursorRange::two(
+                        CCursor::new(0),
+                        CCursor::new(usize::MAX / 2),
+                    )));
+                    egui::TextEdit::store_state(ctx, id, state);
+                }
+            }
+        }
+    }
+
+    /// Keeps a login the user asked to remember, once the device has accepted it.
+    /// A rejected password must never be what gets saved.
+    fn commit_logins(&mut self) {
+        let connected: Vec<PaneId> = self
+            .panes
+            .iter()
+            .filter(|(_, e)| e.quick && e.pane.status() == Status::Live)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in connected {
+            self.save_quick_session(id);
+        }
+        let ready: Vec<PaneId> = self
+            .panes
+            .iter()
+            .filter(|(_, e)| e.pending_login.is_some() && e.pane.status() == Status::Live)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ready {
+            self.commit_login(id);
+        }
+        for entry in self.panes.values_mut() {
+            if matches!(entry.pane.status(), Status::Closed { .. }) {
+                entry.pending_login = None;
+                entry.remember_login = false;
+            }
+        }
+    }
+
+    /// Files a connection that worked under "Quick sessions", most recent first.
+    /// Connecting again to the same place reuses its entry. Only the newest are
+    /// kept there, unless still open; dragging one elsewhere keeps it for good.
+    fn save_quick_session(&mut self, pane: PaneId) -> Option<Id> {
+        let entry = self.panes.get_mut(&pane)?;
+        entry.quick = false;
+        let settings = entry.pane.spec.settings.clone();
+        let protocol = match settings.get("Protocol") {
+            Some("telnet") => Protocol::Telnet,
+            Some("raw") => Protocol::Raw,
+            Some("serial") => Protocol::Serial,
+            _ => Protocol::Ssh,
+        };
+        let port = settings
+            .get("PortNumber")
+            .and_then(|p| p.parse().ok())
+            .filter(|p| *p != protocol.default_port());
+        let target = Target {
+            protocol,
+            host: settings.get("HostName").unwrap_or_default().to_string(),
+            port,
+            line: settings.get("SerialLine").unwrap_or_default().to_string(),
+        };
+        let username = settings.get("UserName").unwrap_or_default().to_string();
+
+        let folder = self.config.nodes.iter().find_map(|n| match n {
+            Node::Folder(f) if f.name == QUICK_FOLDER => Some(f.id),
+            _ => None,
+        });
+        let folder = match folder {
+            Some(id) => id,
+            None => self.config.add_folder(None, QUICK_FOLDER)?,
+        };
+        let same_place = |n: &Node| match n {
+            Node::Session(s) if s.target == target => {
+                let user = self
+                    .config
+                    .resolve(s.id)
+                    .and_then(|r| r.identity(&self.config).map(|i| i.username.clone()));
+                (user.unwrap_or_default() == username).then_some(s.id)
+            }
+            _ => None,
+        };
+        let existing = match self.config.find(folder) {
+            Some(Node::Folder(f)) => f.children.iter().find_map(same_place),
+            _ => None,
+        };
+        let session = match existing {
+            Some(id) => id,
+            None => {
+                let place = if protocol == Protocol::Serial {
+                    target.line.clone()
+                } else {
+                    target.host.clone()
+                };
+                let name = if username.is_empty() {
+                    place
+                } else {
+                    format!("{username}@{place}")
+                };
+                let id = self.config.add_session(Some(folder), &name, target)?;
+                if !username.is_empty() {
+                    let found = self
+                        .config
+                        .identities
+                        .iter()
+                        .find(|i| i.username == username && i.key_file.is_empty())
+                        .map(|i| i.id);
+                    let identity =
+                        found.unwrap_or_else(|| self.config.add_identity(&username, &username));
+                    if let Some(o) = self.config.overrides_mut(id) {
+                        o.identity = Some(identity);
+                    }
+                }
+                id
+            }
+        };
+        self.config.move_node(session, Some(folder), 0);
+
+        let open: HashSet<Id> = self
+            .panes
+            .values()
+            .filter_map(|e| e.pane.spec.session_id)
+            .collect();
+        if let Some(Node::Folder(f)) = self.config.find(folder) {
+            let extra: Vec<Id> = f
+                .children
+                .iter()
+                .filter(|n| matches!(n, Node::Session(_)))
+                .skip(QUICK_LIMIT)
+                .map(Node::id)
+                .filter(|id| !open.contains(id) && *id != session)
+                .collect();
+            for id in extra {
+                self.config.remove(id);
+            }
+        }
+        if let Some(entry) = self.panes.get_mut(&pane) {
+            entry.pane.spec.session_id = Some(session);
+        }
+        self.dirty = true;
+        Some(session)
+    }
+
+    fn commit_login(&mut self, pane: PaneId) {
+        let Some(entry) = self.panes.get_mut(&pane) else {
+            return;
+        };
+        let Some(login) = entry.pending_login.take() else {
+            return;
+        };
+        entry.remember_login = false;
+        let settings = entry.pane.spec.settings.clone();
+        let existing_session = entry.pane.spec.session_id;
+        let username = login
+            .username
+            .or_else(|| settings.get("UserName").map(str::to_string))
+            .unwrap_or_default();
+
+        // A quick connection has nothing to attach a login to, so it becomes a session.
+        let session = existing_session.or_else(|| self.save_quick_session(pane));
+        let Some(session) = session else { return };
+
+        let current = self
+            .config
+            .resolve(session)
+            .and_then(|r| r.identity(&self.config).map(|i| i.id));
+        let reusable = current.filter(|id| {
+            self.config
+                .identity(*id)
+                .is_some_and(|i| i.username == username || username.is_empty())
+        });
+        let identity = reusable.unwrap_or_else(|| {
+            let label = if username.is_empty() {
+                "New login"
+            } else {
+                username.as_str()
+            };
+            let id = self.config.add_identity(label, &username);
+            if let Some(o) = self.config.overrides_mut(session) {
+                o.identity = Some(id);
+            }
+            id
+        });
+        self.dirty = true;
+        self.selected_node = Some(session);
+        if let Some(entry) = self.panes.get_mut(&pane) {
+            entry.pane.spec.session_id = Some(session);
+        }
+        match login.password {
+            Some(password) => self.save_password(identity, password, Some(pane)),
+            None => self.info = Some("Saved the username for this session.".to_string()),
+        }
+    }
+
+    /// Stores a password, asking for the vault's passphrase first if it is locked.
+    fn save_password(&mut self, identity: Id, password: Zeroizing<String>, pane: Option<PaneId>) {
+        if self.vault.lock().unwrap().is_locked() {
+            self.unlock = Some(Unlock {
+                then_save: Some((identity, password, pane)),
+                ..Default::default()
+            });
+            return;
+        }
+        let Some(key) = self.config.identity(identity).map(|i| i.secret_key()) else {
+            return;
+        };
+        let result = self.vault.lock().unwrap().set(&key, &password);
+        match result {
+            Ok(()) => {
+                if let Some(i) = self.config.identity_mut(identity) {
+                    i.has_password = true;
+                }
+                self.dirty = true;
+                // Reconnecting this pane should use what was just saved.
+                if let Some(entry) = pane.and_then(|p| self.panes.get_mut(&p)) {
+                    let vault = self.vault.clone();
+                    entry.pane.spec.password =
+                        Some(Arc::new(move || vault.lock().unwrap().get(&key)));
+                }
+                self.info = Some("Saved the login for this session.".to_string());
+            }
+            Err(e) => self.error = Some(format!("Could not save the password: {e}")),
         }
     }
 
@@ -688,6 +976,7 @@ impl App {
             (Key::F, Command::Search),
             (Key::R, Command::Reconnect),
             (Key::S, Command::ToggleFiles),
+            (Key::I, Command::SessionSettings),
         ];
         for (key, command) in table {
             if pressed(key, shift_cmd) {
@@ -766,6 +1055,21 @@ impl App {
             }
         }
 
+        if !self.sidebar_open {
+            Panel::left("sidebar-handle")
+                .exact_size(30.0)
+                .resizable(false)
+                .frame(
+                    Frame::new()
+                        .fill(chrome.sidebar)
+                        .inner_margin(Margin::same(3)),
+                )
+                .show(ui, |ui| {
+                    if ui.button("›").on_hover_text("Show the sidebar").clicked() {
+                        self.sidebar_open = true;
+                    }
+                });
+        }
         if self.sidebar_open {
             Panel::left("sidebar")
                 .resizable(true)
@@ -824,12 +1128,20 @@ impl App {
         if self.tabs.is_empty() {
             self.empty_state(ui, central, &chrome);
         } else if let Some(layout) = self.tabs.get(self.active_tab).map(|t| t.layout.clone()) {
+            // The copy only carries divider positions back. Nothing may change the
+            // set of panes while drawing: closes wait in `closing` until afterwards.
             let layout = self.draw_layout(ui, &layout, central, &chrome);
             if let Some(tab) = self.tabs.get_mut(self.active_tab) {
                 tab.layout = layout;
             }
         }
+        for id in std::mem::take(&mut self.closing) {
+            self.close_pane(id);
+        }
+        self.repair_tabs();
 
+        self.commit_logins();
+        self.select_all_on_focus(&ctx);
         self.sync_agent_server(&ctx);
         self.palette_overlay(&ctx, &chrome);
         self.paste_overlay(&ctx, &chrome);
@@ -1117,14 +1429,14 @@ impl App {
                     if entry.search.no_match {
                         ui.label(RichText::new("none").color(chrome.danger).small());
                     }
-                    if ui.small_button("↑").clicked() {
+                    if ui.button("↑").clicked() {
                         terminal_view::search_step(&entry.pane, &mut entry.search, false);
                     }
-                    if ui.small_button("↓").clicked() {
+                    if ui.button("↓").clicked() {
                         terminal_view::search_step(&entry.pane, &mut entry.search, true);
                     }
                     let escape = ui.input(|i| i.key_pressed(Key::Escape));
-                    if ui.small_button("×").clicked() || (escape && response.has_focus()) {
+                    if ui.button("×").clicked() || (escape && response.has_focus()) {
                         entry.search.open = false;
                         entry.search.current = None;
                     }
@@ -1168,7 +1480,21 @@ impl App {
                 ui.set_width(wide - 34.0);
                 match (&pending, &status) {
                     (Some(Pending::Prompt(prompt)), _) => {
-                        action = prompt_card(ui, prompt, &mut entry.answers, chrome);
+                        // A jump host's prompt could be saved as the target's login, so it is not offered.
+                        let offer = entry.pane.spec.settings.get("ProxyHost").is_none()
+                            && prompt
+                                .fields
+                                .iter()
+                                .any(|f| is_password_field(f) || is_username_field(f));
+                        let remember = offer.then_some(&mut entry.remember_login);
+                        action = prompt_card(
+                            ui,
+                            prompt,
+                            &mut entry.answers,
+                            remember,
+                            terminal_id(id),
+                            chrome,
+                        );
                     }
                     (Some(Pending::HostKey(key)), _) => {
                         let unknown = !key.description.contains("does not match");
@@ -1243,6 +1569,22 @@ impl App {
         match action {
             CardAction::None => {}
             CardAction::Answer => {
+                if entry.remember_login {
+                    if let Some(Pending::Prompt(prompt)) = &pending {
+                        let login = entry
+                            .pending_login
+                            .get_or_insert_with(PendingLogin::default);
+                        for (field, answer) in prompt.fields.iter().zip(&entry.answers) {
+                            if is_password_field(field) {
+                                login.password = Some(Zeroizing::new(answer.clone()));
+                            } else if is_username_field(field) {
+                                login.username = Some(answer.clone());
+                            }
+                        }
+                    }
+                } else {
+                    entry.pending_login = None;
+                }
                 let answers: Vec<&str> = entry.answers.iter().map(String::as_str).collect();
                 entry.pane.answer_prompt(&answers);
                 // Secrets do not linger in UI state.
@@ -1254,7 +1596,8 @@ impl App {
             }
             CardAction::HostKey(verdict) => entry.pane.answer_hostkey(verdict),
             CardAction::Reconnect => entry.pane.connect(),
-            CardAction::Close => self.close_pane(id),
+            // Not now: this runs while the layout is being drawn.
+            CardAction::Close => self.closing.push(id),
             CardAction::EnableLegacy => {
                 if let Some(session) = session_id {
                     if let Some(o) = self.config.overrides_mut(session) {
@@ -1280,7 +1623,10 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(RichText::new("linecon0").size(14.0).color(chrome.text));
             ui.with_layout(UiLayout::right_to_left(Align::Center), |ui| {
-                let add = ui.small_button("+").on_hover_text("New session or folder");
+                if ui.button("‹").on_hover_text("Hide the sidebar").clicked() {
+                    self.sidebar_open = false;
+                }
+                let add = ui.button("+").on_hover_text("New session or folder");
                 egui::Popup::menu(&add).show(|ui| {
                     if ui.button("New session").clicked() {
                         self.add_session_near_selection();
@@ -1311,6 +1657,9 @@ impl App {
                 };
                 let spec = self.spec_for(&name, None, &target, &user);
                 self.open_in_new_tab(spec);
+                if let Some(entry) = self.focused_pane().and_then(|id| self.panes.get_mut(&id)) {
+                    entry.quick = true;
+                }
                 self.quick_connect.clear();
             }
         }
@@ -1354,6 +1703,27 @@ impl App {
                     actions.push(TreeAction::Move(*payload, None));
                 }
             });
+        if let Some(id) = self.pending_delete {
+            let (name, is_folder) = match self.config.find(id) {
+                Some(node) => (node.name().to_string(), matches!(node, Node::Folder(_))),
+                None => (String::new(), false),
+            };
+            ui.separator();
+            let question = if is_folder {
+                format!("Delete {name} and everything in it?")
+            } else {
+                format!("Delete {name}?")
+            };
+            ui.label(RichText::new(question).color(chrome.danger));
+            ui.horizontal(|ui| {
+                if ui.button("Delete").clicked() {
+                    actions.push(TreeAction::Delete(id));
+                }
+                if ui.button("Keep").clicked() {
+                    self.pending_delete = None;
+                }
+            });
+        }
         for action in actions {
             self.apply_tree_action(ui.ctx(), action);
         }
@@ -1430,7 +1800,9 @@ impl App {
                     self.dirty = true;
                 }
             }
+            TreeAction::AskDelete(id) => self.pending_delete = Some(id),
             TreeAction::Delete(id) => {
+                self.pending_delete = None;
                 self.config.remove(id);
                 if self.inspector == Some(InspectTarget::Node(id)) {
                     self.inspector = None;
@@ -1491,6 +1863,9 @@ impl App {
                 if response.clicked() {
                     self.active_tab = index;
                 }
+                if ui.button("×").on_hover_text("Close this tab").clicked() {
+                    close = Some(focused);
+                }
                 if response.clicked_by(egui::PointerButton::Middle) {
                     close = Some(focused);
                 }
@@ -1527,7 +1902,7 @@ impl App {
             "Ctrl+Shift+"
         };
         for hint in [
-            "Type user@host in the sidebar to connect".to_string(),
+            "Type user@host in the sidebar, or press + to save a session".to_string(),
             format!("{shortcut}P  command palette"),
             format!("{shortcut}B  toggle sidebar"),
         ] {
@@ -1551,15 +1926,15 @@ impl App {
                 command,
             });
         };
-        add("Split right", "Ctrl+Shift+D", Command::SplitRight);
-        add("Split down", "Ctrl+Shift+E", Command::SplitDown);
-        add("Close pane", "Ctrl+Shift+W", Command::ClosePane);
+        add("Split right", &shortcut("D"), Command::SplitRight);
+        add("Split down", &shortcut("E"), Command::SplitDown);
+        add("Close pane", &shortcut("W"), Command::ClosePane);
         add("Next tab", "Ctrl+Tab", Command::NextTab);
-        add("Toggle sidebar", "Ctrl+Shift+B", Command::ToggleSidebar);
-        add("Search scrollback", "Ctrl+Shift+F", Command::Search);
-        add("Reconnect", "Ctrl+Shift+R", Command::Reconnect);
+        add("Toggle sidebar", &shortcut("B"), Command::ToggleSidebar);
+        add("Search scrollback", &shortcut("F"), Command::Search);
+        add("Reconnect", &shortcut("R"), Command::Reconnect);
         add("Send break", "console", Command::SendBreak);
-        add("File browser (SFTP)", "Ctrl+Shift+S", Command::ToggleFiles);
+        add("File browser (SFTP)", &shortcut("S"), Command::ToggleFiles);
         let server = if self.config.mcp_enabled {
             "Agent access: stop the server"
         } else {
@@ -1589,7 +1964,12 @@ impl App {
             Command::ToggleBroadcast,
         );
         add("Broadcast to all panes", "", Command::BroadcastAll);
-        add("Global settings", "Ctrl+Shift+,", Command::GlobalSettings);
+        add(
+            "Settings for this session",
+            &shortcut("I"),
+            Command::SessionSettings,
+        );
+        add("Global settings", &shortcut(","), Command::GlobalSettings);
         add(
             "Appearance: follow theme",
             "",
@@ -1823,6 +2203,14 @@ impl App {
         }
         if cancel {
             ctx.memory_mut(|m| m.surrender_focus(egui::Id::unique("linecon-unlock-input")));
+            let unlocked = !self.vault.lock().unwrap().is_locked();
+            if let Some((identity, password, pane)) = unlock.then_save.take() {
+                if unlocked {
+                    self.save_password(identity, password, pane);
+                } else {
+                    self.info = Some("The password was not saved.".to_string());
+                }
+            }
             // Skipping still opens the session; the device's prompt is the fallback.
             if let Some(id) = unlock.then_open {
                 if let Some(session) = self.config.session(id).cloned() {
@@ -1877,7 +2265,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Snippets").size(13.0));
             ui.with_layout(UiLayout::right_to_left(Align::Center), |ui| {
-                if ui.small_button("New").clicked() {
+                if ui.button("New").clicked() {
                     list.push(Snippet {
                         name: "New snippet".to_string(),
                         text: String::new(),
@@ -1931,15 +2319,175 @@ impl App {
         changed
     }
 
-    /// Logins, shown under global settings. Passwords go straight to the vault.
+    /// The login used here: pick one, make one, and edit it in place.
+    fn login_block(
+        &mut self,
+        ui: &mut Ui,
+        target: InspectTarget,
+        resolved: &Resolved,
+        chrome: &Chrome,
+    ) {
+        let overridden = match target {
+            InspectTarget::Root => self.config.settings.identity,
+            InspectTarget::Node(id) => self.config.overrides_mut(id).and_then(|o| o.identity),
+        };
+        let header = row_header(
+            ui,
+            "Login",
+            &resolved.identity,
+            overridden.is_some(),
+            chrome,
+        );
+        let mut new_choice = header.clear.then_some(None);
+        let current = overridden.unwrap_or(resolved.identity.value);
+        let names: Vec<(Id, String)> = self
+            .config
+            .identities
+            .iter()
+            .map(|i| (i.id, i.name.clone()))
+            .collect();
+        const NONE_LABEL: &str = "None: ask each time";
+        let selected = names
+            .iter()
+            .find(|(id, _)| *id == current)
+            .map_or(NONE_LABEL, |(_, n)| n.as_str());
+        ui.horizontal(|ui| {
+            let combo = egui::ComboBox::from_id_salt("login")
+                .selected_text(selected)
+                .width(190.0)
+                .show_ui(ui, |ui| {
+                    // Id 0 is no login, which also stops one being inherited.
+                    if ui.selectable_label(current == 0, NONE_LABEL).clicked() {
+                        new_choice = Some(Some(0));
+                    }
+                    for (id, name) in &names {
+                        if ui.selectable_label(*id == current, name).clicked() {
+                            new_choice = Some(Some(*id));
+                        }
+                    }
+                });
+            combo.response.labelled_by(header.label);
+            if ui.button("New login").clicked() {
+                let id = self.config.add_identity("New login", "");
+                new_choice = Some(Some(id));
+            }
+        });
+        if let Some(choice) = new_choice {
+            let slot = match target {
+                InspectTarget::Root => Some(&mut self.config.settings),
+                InspectTarget::Node(id) => self.config.overrides_mut(id),
+            };
+            if let Some(o) = slot {
+                o.identity = choice;
+            }
+            self.dirty = true;
+            return;
+        }
+        if self.config.identity(current).is_some() {
+            Frame::new()
+                .fill(chrome.raised)
+                .corner_radius(8)
+                .inner_margin(Margin::same(10))
+                .show(ui, |ui| {
+                    self.identity_form(ui, current, chrome);
+                    ui.label(
+                        RichText::new("Changes apply everywhere this login is used.")
+                            .size(12.0)
+                            .color(chrome.muted),
+                    );
+                });
+        }
+    }
+
+    fn identity_form(&mut self, ui: &mut Ui, id: Id, chrome: &Chrome) {
+        let Some(identity) = self.config.identity(id).cloned() else {
+            return;
+        };
+        ui.push_id(("identity-form", id), |ui| {
+            let mut edited = identity.clone();
+            let field = |ui: &mut Ui, label: &str, value: &mut String, hint: &str| {
+                let label = ui
+                    .label(RichText::new(label).size(12.0).color(chrome.muted))
+                    .id;
+                ui.add(
+                    TextEdit::singleline(value)
+                        .hint_text(hint)
+                        .desired_width(f32::INFINITY),
+                )
+                .labelled_by(label)
+                .changed()
+            };
+            let mut changed = field(ui, "Username", &mut edited.username, "");
+            // A new login takes its name from the username until it has its own.
+            if changed && (identity.name == "New login" || identity.name == identity.username) {
+                edited.name = edited.username.clone();
+            }
+            changed |= field(ui, "Login name", &mut edited.name, "");
+            changed |= field(ui, "Key file (PuTTY .ppk)", &mut edited.key_file, "None");
+            changed |= ui
+                .checkbox(&mut edited.use_agent, "Use SSH agent")
+                .changed();
+            let label = ui
+                .label(RichText::new("Password").size(12.0).color(chrome.muted))
+                .id;
+            let mut forget = false;
+            if identity.has_password {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Saved").color(chrome.success));
+                    forget = ui.button("Forget").clicked();
+                });
+            } else {
+                let draft = self.password_drafts.entry(id).or_default();
+                let response = ui
+                    .add(
+                        TextEdit::singleline(&mut **draft)
+                            .password(true)
+                            .hint_text("Not saved: ask each time")
+                            .desired_width(f32::INFINITY),
+                    )
+                    .labelled_by(label);
+                let enter = response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                let can_save = !draft.is_empty();
+                if ui
+                    .add_enabled(can_save, egui::Button::new("Save password"))
+                    .clicked()
+                    || (enter && can_save)
+                {
+                    if let Some(password) = self.password_drafts.remove(&id) {
+                        self.save_password(id, password, None);
+                    }
+                }
+            }
+            if forget {
+                if self.vault.lock().unwrap().is_locked() {
+                    self.unlock = Some(Unlock::default());
+                } else {
+                    let _ = self.vault.lock().unwrap().remove(&identity.secret_key());
+                    edited.has_password = false;
+                    changed = true;
+                }
+            }
+            if changed {
+                // Saving a password above may have changed this flag.
+                let saved = self.config.identity(id).is_some_and(|i| i.has_password);
+                edited.has_password = edited.has_password && (saved || forget);
+                if let Some(slot) = self.config.identity_mut(id) {
+                    *slot = edited;
+                }
+                self.dirty = true;
+            }
+        });
+    }
+
+    /// Every login, shown under global settings.
     fn identities_section(&mut self, ui: &mut Ui, chrome: &Chrome) {
         ui.add_space(6.0);
         ui.separator();
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Identities").size(13.0));
+            ui.label(RichText::new("All logins").size(13.0));
             ui.with_layout(UiLayout::right_to_left(Align::Center), |ui| {
-                if ui.small_button("New").clicked() {
-                    self.config.add_identity("New identity", "");
+                if ui.button("New").clicked() {
+                    self.config.add_identity("New login", "");
                     self.dirty = true;
                 }
             });
@@ -1957,81 +2505,23 @@ impl App {
             egui::CollapsingHeader::new(header.to_string())
                 .id_salt(("identity", id))
                 .show(ui, |ui| {
-                    let mut edited = identity.clone();
-                    let field = |ui: &mut Ui, label: &str, value: &mut String, hint: &str| {
-                        let label = ui
-                            .label(RichText::new(label).size(12.0).color(chrome.muted))
-                            .id;
-                        ui.add(
-                            TextEdit::singleline(value)
-                                .hint_text(hint)
-                                .desired_width(f32::INFINITY),
-                        )
-                        .labelled_by(label)
-                        .changed()
-                    };
-                    let mut changed = field(ui, "Name", &mut edited.name, "");
-                    changed |= field(ui, "Username", &mut edited.username, "");
-                    changed |= field(ui, "Key file", &mut edited.key_file, "None");
-                    changed |= ui
-                        .checkbox(&mut edited.use_agent, "Use SSH agent")
-                        .changed();
-                    let label = ui
-                        .label(RichText::new("Password").size(12.0).color(chrome.muted))
-                        .id;
-                    let locked = self.vault.lock().unwrap().is_locked();
-                    if identity.has_password {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("Saved").color(chrome.success));
-                            if ui.small_button("Forget").clicked() && !locked {
-                                let _ = self.vault.lock().unwrap().remove(&identity.secret_key());
-                                edited.has_password = false;
-                                changed = true;
-                            }
-                        });
-                    } else {
-                        let draft = self.password_drafts.entry(id).or_default();
-                        ui.add(
-                            TextEdit::singleline(&mut **draft)
-                                .password(true)
-                                .hint_text("Not saved; ask each time")
-                                .desired_width(f32::INFINITY),
-                        )
-                        .labelled_by(label);
-                        if !draft.is_empty() && ui.button("Save password").clicked() {
-                            if locked {
-                                self.unlock = Some(Unlock::default());
-                            } else {
-                                let result = self
-                                    .vault
-                                    .lock()
-                                    .unwrap()
-                                    .set(&identity.secret_key(), draft.as_str());
-                                match result {
-                                    Ok(()) => {
-                                        edited.has_password = true;
-                                        changed = true;
-                                        self.password_drafts.remove(&id);
-                                    }
-                                    Err(e) => self.error = Some(e.to_string()),
-                                }
-                            }
-                        }
-                    }
+                    self.identity_form(ui, id, chrome);
                     if ui
-                        .button(RichText::new("Delete identity").color(chrome.danger))
+                        .button(RichText::new("Delete login").color(chrome.danger))
                         .clicked()
                     {
                         if identity.has_password {
+                            if self.vault.lock().unwrap().is_locked() {
+                                self.error = Some(
+                                    "Unlock saved passwords first, so this one is not left behind."
+                                        .to_string(),
+                                );
+                                return;
+                            }
                             let _ = self.vault.lock().unwrap().remove(&identity.secret_key());
                         }
                         self.password_drafts.remove(&id);
                         self.config.remove_identity(id);
-                        self.dirty = true;
-                    } else if changed {
-                        if let Some(slot) = self.config.identity_mut(id) {
-                            *slot = edited;
-                        }
                         self.dirty = true;
                     }
                 });
@@ -2118,7 +2608,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(RichText::new(title).size(15.0));
             ui.with_layout(UiLayout::right_to_left(Align::Center), |ui| {
-                if ui.small_button("×").clicked() {
+                if ui.button("×").clicked() {
                     self.inspector = None;
                 }
             });
@@ -2126,12 +2616,7 @@ impl App {
         ui.add_space(6.0);
 
         let theme_names: Vec<String> = self.themes.iter().map(|t| t.name.clone()).collect();
-        let identity_names: Vec<(Id, String)> = self
-            .config
-            .identities
-            .iter()
-            .map(|i| (i.id, i.name.clone()))
-            .collect();
+        let mut connect = None;
         let mut changed = false;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -2144,6 +2629,13 @@ impl App {
                     ui.add_space(6.0);
                     ui.separator();
                 }
+                if let InspectTarget::Node(id) = target {
+                    if is_session && ui.button("Connect").clicked() {
+                        connect = Some(id);
+                    }
+                }
+                self.login_block(ui, target, &resolved, chrome);
+                ui.separator();
                 let serial = match target {
                     InspectTarget::Node(id) => self
                         .config
@@ -2157,15 +2649,8 @@ impl App {
                     InspectTarget::Node(id) => self.config.overrides_mut(id),
                 };
                 if let Some(overrides) = overrides {
-                    changed |= settings_rows(
-                        ui,
-                        &resolved,
-                        overrides,
-                        &theme_names,
-                        &identity_names,
-                        show_serial,
-                        chrome,
-                    );
+                    changed |=
+                        settings_rows(ui, &resolved, overrides, &theme_names, show_serial, chrome);
                 }
                 if !is_session {
                     changed |= self.snippets_section(ui, target, chrome);
@@ -2176,6 +2661,10 @@ impl App {
             });
         if changed {
             self.dirty = true;
+        }
+        if let Some(id) = connect {
+            self.save_if_needed();
+            self.open_saved(id);
         }
     }
 }
@@ -2191,6 +2680,28 @@ struct Unlock {
     passphrase: Zeroizing<String>,
     error: Option<String>,
     then_open: Option<Id>,
+    /// A password waiting to be stored once the vault is open.
+    then_save: Option<(Id, Zeroizing<String>, Option<PaneId>)>,
+}
+
+#[derive(Default)]
+struct PendingLogin {
+    username: Option<String>,
+    password: Option<Zeroizing<String>>,
+}
+
+/// Is this field asking for a password? Passphrases and one-time codes are not
+/// things to save as a login.
+fn is_password_field(field: &linecon_engine::PromptField) -> bool {
+    !field.echo && field.text.to_lowercase().contains("password")
+}
+
+/// Is this field asking for a username?
+fn is_username_field(field: &linecon_engine::PromptField) -> bool {
+    field.echo && {
+        let text = field.text.to_lowercase();
+        text.contains("login") || text.contains("user")
+    }
 }
 
 enum CardAction {
@@ -2207,6 +2718,8 @@ fn prompt_card(
     ui: &mut Ui,
     prompt: &linecon_engine::Prompt,
     answers: &mut Vec<String>,
+    remember: Option<&mut bool>,
+    terminal: egui::Id,
     chrome: &Chrome,
 ) -> CardAction {
     let mut action = CardAction::None;
@@ -2221,31 +2734,43 @@ fn prompt_card(
         ui.label(
             RichText::new("This text came from the server.")
                 .color(chrome.muted)
-                .small(),
+                .size(12.0),
         );
     }
     ui.add_space(4.0);
     let mut submit = false;
     for (index, field) in prompt.fields.iter().enumerate() {
-        ui.label(field.text.trim_end_matches([' ', ':']));
+        let label = ui.label(field.text.trim_end_matches([' ', ':'])).id;
         let edit = TextEdit::singleline(&mut answers[index])
             .password(!field.echo)
             .id(egui::Id::unique(("linecon-prompt", index)))
             .desired_width(f32::INFINITY);
-        let response = ui.add(edit);
-        if index == 0 && !ui.ctx().memory(|m| m.focused().is_some()) {
-            response.request_focus();
-        }
+        let response = ui.add(edit).labelled_by(label);
+        // Check Enter first. It takes focus from the field, and refocusing an
+        // unfocused field below would hide that it was ever pressed.
         if response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
             submit = true;
         }
+        // Whoever was typing in the terminal is now being asked something.
+        let idle = ui
+            .ctx()
+            .memory(|m| m.focused().is_none_or(|f| f == terminal));
+        if index == 0 && idle && !submit {
+            response.request_focus();
+        }
+    }
+    if let Some(remember) = remember {
+        ui.add_space(2.0);
+        ui.checkbox(remember, "Remember this login").on_hover_text(
+            "Saved only if the device accepts it. Passwords go in the secure store.",
+        );
     }
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         if ui.button("Continue").clicked() || submit {
             action = CardAction::Answer;
         }
-        if ui.button("Cancel").clicked() {
+        if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
             action = CardAction::Cancel;
         }
     });
@@ -2335,6 +2860,7 @@ enum TreeAction {
     FinishRename(Id, String),
     NewSession(Option<Id>),
     NewFolder(Option<Id>),
+    AskDelete(Id),
     Delete(Id),
     Move(Id, Option<Id>),
 }
@@ -2381,12 +2907,17 @@ fn tree_rows(
                 ));
             }
             Node::Session(session) => {
-                let color = if open.contains(&session.id) {
-                    chrome.success
+                // Filled when open, hollow when not, so this does not rely on color alone.
+                if open.contains(&session.id) {
+                    ui.painter()
+                        .circle_filled(pos2(x + 3.0, y), 4.0, chrome.success);
                 } else {
-                    chrome.border
-                };
-                ui.painter().circle_filled(pos2(x + 3.0, y), 3.5, color);
+                    ui.painter().circle_stroke(
+                        pos2(x + 3.0, y),
+                        3.5,
+                        Stroke::new(1.2, chrome.muted),
+                    );
+                }
             }
         }
         let text_x = x + 14.0;
@@ -2432,6 +2963,16 @@ fn tree_rows(
                     FontId::proportional(11.0),
                     chrome.muted,
                 );
+            }
+        }
+
+        // Settings should not be something you have to know to right-click for.
+        if response.hovered() || selected == Some(id) {
+            let button =
+                Rect::from_center_size(rect.right_center() - vec2(16.0, 0.0), vec2(26.0, 24.0));
+            let mut child = ui.new_child(UiBuilder::new().max_rect(button));
+            if child.button("···").on_hover_text("Settings").clicked() {
+                actions.push(TreeAction::Inspect(id));
             }
         }
 
@@ -2489,7 +3030,7 @@ fn tree_rows(
                 .button(RichText::new("Delete").color(chrome.danger))
                 .clicked()
             {
-                actions.push(TreeAction::Delete(id));
+                actions.push(TreeAction::AskDelete(id));
                 ui.close();
             }
         });
@@ -2741,13 +3282,13 @@ fn files_body(ui: &mut Ui, sftp: &mut SftpPane, chrome: &Chrome) {
             .color(chrome.muted),
     );
     ui.horizontal(|ui| {
-        if ui.small_button("Up").clicked() {
+        if ui.button("Up").clicked() {
             sftp.list(&linecon_engine::sftp::parent(&path));
         }
-        if ui.small_button("Refresh").clicked() {
+        if ui.button("Refresh").clicked() {
             sftp.list(&path);
         }
-        if ui.small_button("New folder").clicked() {
+        if ui.button("New folder").clicked() {
             sftp.new_folder = Some(String::new());
         }
     });
@@ -2761,7 +3302,7 @@ fn files_body(ui: &mut Ui, sftp: &mut SftpPane, chrome: &Chrome) {
             .map(|t| progress.done as f32 / t as f32);
         ui.label(RichText::new(&progress.name).size(12.0));
         ui.add(egui::ProgressBar::new(fraction.unwrap_or(0.0)).text(human_size(progress.done)));
-        if ui.small_button("Cancel transfer").clicked() {
+        if ui.button("Cancel transfer").clicked() {
             sftp.cancel_transfer();
         }
     }
@@ -2777,10 +3318,10 @@ fn files_body(ui: &mut Ui, sftp: &mut SftpPane, chrome: &Chrome) {
         let mut create = None;
         let mut dismiss = false;
         ui.horizontal(|ui| {
-            if (ui.small_button("Create").clicked() || submit) && !name.is_empty() {
+            if (ui.button("Create").clicked() || submit) && !name.is_empty() {
                 create = Some(name.clone());
             }
-            dismiss = ui.small_button("Cancel").clicked();
+            dismiss = ui.button("Cancel").clicked();
         });
         if let Some(name) = create {
             sftp.mkdir(&name);
@@ -2801,11 +3342,11 @@ fn files_body(ui: &mut Ui, sftp: &mut SftpPane, chrome: &Chrome) {
             .labelled_by(label);
         let (from, to) = (from.clone(), to.clone());
         ui.horizontal(|ui| {
-            if ui.small_button("Rename").clicked() && !to.is_empty() {
+            if ui.button("Rename").clicked() && !to.is_empty() {
                 sftp.rename(&from, &to);
                 sftp.renaming = None;
             }
-            if ui.small_button("Cancel").clicked() {
+            if ui.button("Cancel").clicked() {
                 sftp.renaming = None;
             }
         });
@@ -2814,11 +3355,11 @@ fn files_body(ui: &mut Ui, sftp: &mut SftpPane, chrome: &Chrome) {
     if let Some((name, is_dir)) = sftp.confirm_delete.clone() {
         ui.label(RichText::new(format!("Delete {name}?")).color(chrome.danger));
         ui.horizontal(|ui| {
-            if ui.small_button("Delete").clicked() {
+            if ui.button("Delete").clicked() {
                 sftp.delete(&name, is_dir);
                 sftp.confirm_delete = None;
             }
-            if ui.small_button("Keep").clicked() {
+            if ui.button("Keep").clicked() {
                 sftp.confirm_delete = None;
             }
         });
@@ -2830,11 +3371,11 @@ fn files_body(ui: &mut Ui, sftp: &mut SftpPane, chrome: &Chrome) {
             .unwrap_or("this file");
         ui.label(RichText::new(format!("Replace {name} on the device?")).color(chrome.warning));
         ui.horizontal(|ui| {
-            if ui.small_button("Replace").clicked() {
+            if ui.button("Replace").clicked() {
                 sftp.upload(&local);
                 sftp.confirm_overwrite = None;
             }
-            if ui.small_button("Keep").clicked() {
+            if ui.button("Keep").clicked() {
                 sftp.confirm_overwrite = None;
             }
         });
@@ -2996,35 +3537,10 @@ fn settings_rows(
     r: &Resolved,
     o: &mut Overrides,
     theme_names: &[String],
-    identities: &[(Id, String)],
     show_serial: bool,
     chrome: &Chrome,
 ) -> bool {
     let mut changed = false;
-
-    let header = row_header(ui, "Identity", &r.identity, o.identity.is_some(), chrome);
-    if header.clear {
-        o.identity = None;
-        changed = true;
-    }
-    let current = o.identity.unwrap_or(r.identity.value);
-    let current_name = identities
-        .iter()
-        .find(|(id, _)| *id == current)
-        .map(|(_, name)| name.as_str())
-        .unwrap_or("None; ask each time");
-    let combo = egui::ComboBox::from_id_salt("identity")
-        .selected_text(current_name)
-        .width(220.0)
-        .show_ui(ui, |ui| {
-            for (id, name) in identities {
-                if ui.selectable_label(*id == current, name).clicked() {
-                    o.identity = Some(*id);
-                    changed = true;
-                }
-            }
-        });
-    combo.response.labelled_by(header.label);
 
     let header = row_header(ui, "Theme", &r.theme, o.theme.is_some(), chrome);
     if header.clear {
@@ -3347,10 +3863,10 @@ fn order_list(
     let mut swap = None;
     for (index, token) in list.iter().enumerate() {
         ui.horizontal(|ui| {
-            if ui.small_button("↑").clicked() && index > 0 {
+            if ui.button("↑").clicked() && index > 0 {
                 swap = Some((index, index - 1));
             }
-            if ui.small_button("↓").clicked() && index + 1 < list.len() {
+            if ui.button("↓").clicked() && index + 1 < list.len() {
                 swap = Some((index, index + 1));
             }
             let class = table.iter().find(|c| c.token == token);
@@ -3461,6 +3977,97 @@ impl App {
 
     pub fn agent_host(&self) -> Arc<dyn Host> {
         self.agent_view.clone()
+    }
+
+    pub fn use_vault(&mut self, store: Box<dyn linecon_config::secrets::SecretStore>) {
+        self.vault = Arc::new(Mutex::new(Vault::with_store(store)));
+    }
+
+    pub fn vault_get(&self, key: &str) -> Option<String> {
+        self.vault.lock().unwrap().get(key).map(|v| v.to_string())
+    }
+
+    /// Acts as if the user answered a prompt with "Remember this login" ticked.
+    pub fn demo_remember(&mut self, username: Option<&str>, password: Option<&str>) {
+        let id = self.focused_pane().unwrap();
+        let entry = self.panes.get_mut(&id).unwrap();
+        entry.remember_login = true;
+        entry.pending_login = Some(PendingLogin {
+            username: username.map(str::to_string),
+            password: password.map(|p| Zeroizing::new(p.to_string())),
+        });
+    }
+
+    pub fn demo_set_settings(&mut self, settings: Settings) {
+        let id = self.focused_pane().unwrap();
+        self.panes.get_mut(&id).unwrap().pane.spec.settings = settings;
+    }
+
+    pub fn demo_close_focused_connection(&mut self) {
+        let id = self.focused_pane().unwrap();
+        *self.panes[&id].pane.shared.status.lock().unwrap() = Status::Closed { reason: None };
+    }
+
+    pub fn focused_session(&self) -> Option<Id> {
+        self.snippet_scope()
+    }
+
+    pub fn ask_delete_first_folder(&mut self) {
+        self.pending_delete = Some(self.config.nodes[0].id());
+    }
+
+    pub fn quick_open_like_the_sidebar(&mut self, text: &str) {
+        self.quick_open(text);
+        let id = self.focused_pane().unwrap();
+        self.panes.get_mut(&id).unwrap().quick = true;
+    }
+
+    pub fn quick_folder_sessions(&self) -> Vec<String> {
+        self.config
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                Node::Folder(f) if f.name == QUICK_FOLDER => {
+                    Some(f.children.iter().map(|c| c.name().to_string()).collect())
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn focused_pending_is_none(&self) -> bool {
+        let id = self.focused_pane().unwrap();
+        self.panes[&id]
+            .pane
+            .shared
+            .pending
+            .lock()
+            .unwrap()
+            .is_none()
+    }
+
+    /// Every tab's panes exist, and every pane belongs to exactly one tab.
+    pub fn assert_tabs_consistent(&self) {
+        let mut seen = Vec::new();
+        for tab in &self.tabs {
+            let mut ids = Vec::new();
+            tab.layout.panes(&mut ids);
+            assert!(
+                ids.contains(&tab.focused),
+                "a tab focuses a pane it does not hold"
+            );
+            seen.extend(ids);
+        }
+        seen.sort_unstable();
+        let mut existing: Vec<PaneId> = self.panes.keys().copied().collect();
+        existing.sort_unstable();
+        assert_eq!(seen, existing, "tabs and panes disagree");
+    }
+
+    pub fn break_a_tab_for_test(&mut self) {
+        let tab = &mut self.tabs[self.active_tab];
+        tab.layout = Layout::Leaf(9999);
+        tab.focused = 9999;
     }
 
     pub fn tab_count(&self) -> usize {

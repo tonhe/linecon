@@ -32,22 +32,73 @@ pub struct Chrome {
     pub warning: Color32,
 }
 
+/// WCAG contrast ratio between two colors.
+pub fn contrast(a: Color32, b: Color32) -> f32 {
+    fn luminance(c: Color32) -> f32 {
+        let f = |v: u8| {
+            let v = f32::from(v) / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
+    }
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// Moves a color toward black or white until it reads on every background given.
+/// Terminal colors are left as the theme defines them; this is for window chrome,
+/// where several themes' palettes would otherwise fall below WCAG AA.
+fn readable(color: Color32, backgrounds: &[Color32], ratio: f32, light_theme: bool) -> Color32 {
+    let target = if light_theme {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    };
+    let passes = |c: Color32| backgrounds.iter().all(|b| contrast(c, *b) >= ratio);
+    for step in 0..=50 {
+        let t = step as f32 / 50.0;
+        let channel =
+            |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8;
+        let candidate = Color32::from_rgb(
+            channel(color.r(), target.r()),
+            channel(color.g(), target.g()),
+            channel(color.b(), target.b()),
+        );
+        if passes(candidate) {
+            return candidate;
+        }
+    }
+    target
+}
+
 impl Chrome {
     pub fn from_theme(theme: &Theme) -> Self {
         let (bg, fg) = (theme.background, theme.foreground);
+        let sidebar = mix(bg, fg, 0.035);
+        let raised = mix(bg, fg, 0.08);
+        let hover = mix(bg, fg, 0.09);
+        let control = mix(bg, fg, 0.15);
+        let selected = mix(bg, theme.ansi[4], 0.28);
+        let plain = [color(bg), sidebar, raised, hover];
+        let every = [color(bg), sidebar, raised, hover, control, selected];
+        let aa = |c: Color32, on: &[Color32]| readable(c, on, 4.5, theme.light);
         Self {
-            sidebar: mix(bg, fg, 0.035),
-            raised: mix(bg, fg, 0.08),
-            hover: mix(bg, fg, 0.09),
-            control: mix(bg, fg, 0.15),
-            selected: mix(bg, theme.ansi[4], 0.28),
+            sidebar,
+            raised,
+            hover,
+            selected,
+            control,
             border: mix(bg, fg, 0.20),
-            text: mix(bg, fg, 0.92),
-            muted: mix(bg, fg, 0.55),
-            accent: color(theme.ansi[4]),
-            danger: color(theme.ansi[1]),
-            success: color(theme.ansi[2]),
-            warning: color(theme.ansi[3]),
+            text: aa(mix(bg, fg, 0.92), &every),
+            muted: aa(mix(bg, fg, 0.60), &plain),
+            accent: aa(color(theme.ansi[4]), &plain),
+            danger: aa(color(theme.ansi[1]), &plain),
+            success: aa(color(theme.ansi[2]), &plain),
+            warning: aa(color(theme.ansi[3]), &plain),
         }
     }
 }
@@ -82,8 +133,10 @@ pub fn apply(ctx: &egui::Context, theme: &Theme) {
     }
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, chrome.border);
     visuals.widgets.inactive.weak_bg_fill = chrome.control;
-    visuals.widgets.inactive.bg_fill = chrome.raised;
-    visuals.widgets.inactive.bg_stroke = Stroke::NONE;
+    // Check boxes use these. A control has to be visible against the panel it is on.
+    visuals.widgets.inactive.bg_fill = chrome.control;
+    visuals.widgets.inactive.bg_stroke =
+        Stroke::new(1.0, mix(theme.background, theme.foreground, 0.45));
     visuals.widgets.hovered.weak_bg_fill = chrome.border;
     visuals.widgets.hovered.bg_fill = chrome.hover;
     visuals.widgets.hovered.bg_stroke = Stroke::NONE;
@@ -102,6 +155,10 @@ pub fn apply(ctx: &egui::Context, theme: &Theme) {
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style.spacing.button_padding = egui::vec2(10.0, 5.0);
         style.spacing.interact_size.y = 26.0;
+        // Keep check boxes and their hit areas at a usable size.
+        style.spacing.icon_width = 18.0;
+        // A scrollbar that floats over content covers the right edge of fields.
+        style.spacing.scroll = egui::style::ScrollStyle::solid();
     });
 }
 

@@ -51,7 +51,9 @@ keeps config, known hosts and logs in a `linecon-data` folder beside it.
 | Shortcut (Cmd on macOS) | |
 |---|---|
 | Ctrl+Shift+P | Command palette |
-| Ctrl+Shift+B | Toggle sidebar |
+| Ctrl+Shift+B | Hide or show the sidebar |
+| Ctrl+Shift+I | Settings for this session |
+| Ctrl+Shift+S | File browser |
 | Ctrl+Shift+D / E | Split right / down |
 | Ctrl+Shift+W | Close pane |
 | Ctrl+Shift+F | Search scrollback |

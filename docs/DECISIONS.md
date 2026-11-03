@@ -136,3 +136,9 @@ The brief lists an MCP server so an agent can drive open sessions. These are liv
 text from a device can try to instruct an agent, so the server is off by default, grants are per pane and never
 saved, and the tools for opening connections or reading secrets do not exist. The window re-checks access when it
 applies queued input, so withdrawing a grant wins over anything in flight.
+
+## 2026-11-03: Quick connections are kept once they work
+
+Connections from the quick connect box go in a "Quick sessions" folder, but only after they connect, so
+typos do not pile up. Reconnecting reuses the entry and moves it to the top, and only the newest 25 are kept
+there. Dragging one to another folder keeps it for good. Passwords are saved only by asking.

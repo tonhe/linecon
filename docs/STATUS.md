@@ -30,8 +30,11 @@
 
 - Snippet sharing by exported file.
 
+- First real run on macOS: the window, Keychain prompts and agent login all work. Fixes from that are in
+  `specs/011-first-real-use`.
+
 ## In progress
-- Nothing. The requirements list is complete, pending real desktop testing.
+- Fixes from real use on macOS.
 
 ## Next
 - Whatever real use of the window turns up.
@@ -40,8 +43,9 @@
 - Nothing.
 
 ## Known gaps
-- The window has only been exercised through a headless harness. No one has yet run it on a real
-  desktop on any platform; this machine has no display. Please try a build and report back.
+- The window has run on macOS by hand. Linux and Windows have only been exercised headlessly.
+- PuTTY reads .ppk key files only, so an OpenSSH key file will not load directly; keys need an agent.
+- PuTTY does not read ~/.ssh/config. Use the import command.
 - Windows and macOS do not run the Docker legacy test, because hosted runners lack a Linux
   container runtime. They run the loopback tests, and the protocol code is shared.
 - Ctrl+V with an empty clipboard sends nothing.

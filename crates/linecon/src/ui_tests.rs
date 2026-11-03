@@ -960,3 +960,404 @@ fn agent_access_is_off_until_granted_pane_by_pane() {
         "[]"
     );
 }
+
+/// Window chrome meets WCAG AA on every theme it can appear on.
+#[test]
+fn chrome_text_meets_contrast_minimums_on_every_theme() {
+    use crate::style::{color, contrast, Chrome};
+    for t in crate::themes::builtin() {
+        let c = Chrome::from_theme(&t);
+        let plain = [
+            ("terminal", color(t.background)),
+            ("sidebar", c.sidebar),
+            ("card", c.raised),
+            ("hover", c.hover),
+        ];
+        for (bg_name, bg) in plain {
+            for (name, fg) in [
+                ("text", c.text),
+                ("muted", c.muted),
+                ("accent", c.accent),
+                ("danger", c.danger),
+                ("success", c.success),
+                ("warning", c.warning),
+            ] {
+                let ratio = contrast(fg, bg);
+                assert!(
+                    ratio >= 4.5,
+                    "{}: {name} on {bg_name} is {ratio:.1}:1",
+                    t.name
+                );
+            }
+        }
+        for (bg_name, bg) in [("button", c.control), ("selected row", c.selected)] {
+            let ratio = contrast(c.text, bg);
+            assert!(
+                ratio >= 4.5,
+                "{}: text on {bg_name} is {ratio:.1}:1",
+                t.name
+            );
+        }
+    }
+}
+
+/// Every control is big enough to hit, by the WCAG 2.2 AA minimum of 24 points.
+#[test]
+fn controls_meet_the_minimum_target_size() {
+    use egui_kittest::kittest::NodeT;
+    let mut s = sample();
+    let folder = s.app.config.ancestors(s.core_sw).unwrap()[0].id;
+    s.app
+        .add_demo_tab("core-sw1", Some(s.core_sw), SHOW_VERSION);
+    s.app.add_demo_tab("second", None, TOP);
+    s.app.inspect(s.core_sw);
+    let _ = folder;
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    // The harness renders at 2x and reports physical pixels.
+    const MINIMUM: f64 = 24.0 * 2.0;
+    let mut small = Vec::new();
+    let mut checked = 0;
+    for node in h.root().children_recursive() {
+        let n = node.accesskit_node();
+        let Some(r) = n.bounding_box() else { continue };
+        let role = format!("{:?}", n.role());
+        if !matches!(
+            role.as_str(),
+            "Button" | "TextInput" | "CheckBox" | "ComboBox" | "SpinButton"
+        ) {
+            continue;
+        }
+        checked += 1;
+        if r.width() < MINIMUM || r.height() < MINIMUM {
+            small.push(format!(
+                "{role} {:?} {:.0}x{:.0}",
+                n.label().unwrap_or_default(),
+                r.width() / 2.0,
+                r.height() / 2.0
+            ));
+        }
+    }
+    assert!(checked > 10, "only found {checked} controls");
+    assert!(small.is_empty(), "too small:\n{}", small.join("\n"));
+}
+
+#[test]
+fn moving_to_a_field_selects_its_text_so_typing_replaces_it() {
+    let mut s = sample();
+    let id = s.core_sw;
+    s.app.inspect(id);
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    let host = h
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .find(|n| n.value().as_deref() == Some("10.20.0.2"));
+    host.expect("the host field").focus();
+    h.run_steps(3);
+    let target = h
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .find(|n| n.value().as_deref() == Some("10.20.0.2"));
+    target.expect("the host field").type_text("sw9");
+    h.run_steps(3);
+    let session = h.state().config.session(id).unwrap();
+    assert_eq!(
+        session.target.host, "sw9",
+        "typing should replace, not add to, the old value"
+    );
+}
+
+#[derive(Default)]
+struct MemoryStore(std::collections::HashMap<String, String>);
+
+impl linecon_config::secrets::SecretStore for MemoryStore {
+    fn get(
+        &self,
+        key: &str,
+    ) -> Result<Option<zeroize::Zeroizing<String>>, linecon_config::secrets::SecretError> {
+        Ok(self.0.get(key).map(|v| zeroize::Zeroizing::new(v.clone())))
+    }
+    fn set(&mut self, key: &str, value: &str) -> Result<(), linecon_config::secrets::SecretError> {
+        self.0.insert(key.to_string(), value.to_string());
+        Ok(())
+    }
+    fn remove(&mut self, key: &str) -> Result<(), linecon_config::secrets::SecretError> {
+        self.0.remove(key);
+        Ok(())
+    }
+}
+
+#[test]
+fn a_login_is_saved_once_the_device_accepts_it() {
+    let mut s = sample();
+    s.app.use_vault(Box::<MemoryStore>::default());
+    s.app.add_demo_tab("core-sw1", Some(s.core_sw), b"");
+    s.app.demo_remember(Some("netops"), Some("hunter2"));
+    let id = s.core_sw;
+    let mut h = harness(s.app);
+    h.run_steps(2);
+    let app = h.state();
+    let identity = app
+        .config
+        .resolve(id)
+        .unwrap()
+        .identity(&app.config)
+        .unwrap()
+        .clone();
+    assert_eq!(identity.username, "netops");
+    assert!(identity.has_password);
+    assert_eq!(
+        app.vault_get(&identity.secret_key()).as_deref(),
+        Some("hunter2")
+    );
+    // The secret must not reach the config file.
+    assert!(!toml_of(app).contains("hunter2"));
+}
+
+fn toml_of(app: &App) -> String {
+    let dir = std::env::temp_dir().join(format!(
+        "linecon-toml-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let path = dir.join("c.toml");
+    linecon_config::save(&path, &app.config).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    text
+}
+
+#[test]
+fn a_rejected_login_is_not_saved() {
+    let mut s = sample();
+    s.app.use_vault(Box::<MemoryStore>::default());
+    s.app.add_demo_tab("core-sw1", Some(s.core_sw), b"");
+    s.app.demo_remember(Some("netops"), Some("wrong"));
+    s.app.demo_close_focused_connection();
+    let id = s.core_sw;
+    let identities = s.app.config.identities.len();
+    let mut h = harness(s.app);
+    h.run_steps(2);
+    let app = h.state();
+    assert_eq!(app.config.identities.len(), identities);
+    assert!(app
+        .config
+        .resolve(id)
+        .unwrap()
+        .identity(&app.config)
+        .is_none());
+}
+
+#[test]
+fn remembering_a_quick_connection_saves_it_as_a_session() {
+    let mut s = sample();
+    s.app.use_vault(Box::<MemoryStore>::default());
+    s.app.add_demo_tab("kaiju", None, b"");
+    s.app
+        .demo_set_settings(linecon_engine::settings::Settings::ssh(
+            "kaiju", 22, "tonhe",
+        ));
+    s.app.demo_remember(None, Some("pw"));
+    let mut h = harness(s.app);
+    h.run_steps(2);
+    let app = h.state();
+    let id = app
+        .focused_session()
+        .expect("the pane now belongs to a saved session");
+    assert_eq!(app.config.session(id).unwrap().target.host, "kaiju");
+    let identity = app
+        .config
+        .resolve(id)
+        .unwrap()
+        .identity(&app.config)
+        .unwrap()
+        .clone();
+    assert_eq!(identity.username, "tonhe");
+    assert_eq!(app.vault_get(&identity.secret_key()).as_deref(), Some("pw"));
+}
+
+#[test]
+fn logins_can_be_made_and_edited_from_the_session_itself() {
+    let mut s = sample();
+    let id = s.core_sw;
+    s.app.inspect(id);
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    assert!(
+        h.query_by_label("Connect").is_some(),
+        "no way to connect from the editor"
+    );
+    h.get_by_label("New login").click();
+    h.run_steps(3);
+    assert!(h
+        .state()
+        .config
+        .resolve(id)
+        .unwrap()
+        .identity(&h.state().config)
+        .is_some());
+    assert!(h.query_by_label("Username").is_some());
+    assert!(h.query_by_label("Save password").is_some());
+    screenshot(&mut h, "login");
+}
+
+#[test]
+fn deleting_asks_first() {
+    let mut s = sample();
+    s.app.ask_delete_first_folder();
+    let folder = s.app.config.nodes[0].id();
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    assert!(
+        h.state().config.find(folder).is_some(),
+        "deleted without asking"
+    );
+    assert!(h.query_by_label("Keep").is_some());
+    h.get_by_label("Keep").click();
+    h.run_steps(3);
+    assert!(h.state().config.find(folder).is_some());
+}
+
+/// Closing a dead session from its card used to overwrite another tab's layout
+/// with the closed pane, leaving a blank tab that could not be closed.
+#[test]
+fn closing_a_disconnected_tab_leaves_the_others_intact() {
+    let mut s = sample();
+    s.app.add_demo_tab("first", None, b"first tab text");
+    s.app.add_demo_tab("second", None, b"second tab text");
+    s.app.add_demo_tab("third", None, b"third tab text");
+    s.app.demo_close_focused_connection();
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    h.get_by_label("Close").click();
+    h.run_steps(3);
+    assert_eq!(h.state().tab_count(), 2);
+    assert_eq!(h.state().pane_count(), 2);
+    h.state().assert_tabs_consistent();
+    assert!(h.state().focused_screen_contains("tab text"));
+
+    // Closing everything that is left also works, down to none.
+    h.state_mut().close_focused();
+    h.run_steps(2);
+    h.state().assert_tabs_consistent();
+    h.state_mut().close_focused();
+    h.run_steps(2);
+    assert_eq!(h.state().tab_count(), 0);
+}
+
+#[test]
+fn a_tab_pointing_at_a_missing_pane_repairs_itself() {
+    let mut s = sample();
+    s.app.add_demo_tab("first", None, b"");
+    s.app.add_demo_tab("second", None, b"");
+    s.app.break_a_tab_for_test();
+    let mut h = harness(s.app);
+    h.run_steps(2);
+    assert_eq!(h.state().tab_count(), 1);
+}
+
+#[test]
+fn enter_answers_the_password_prompt() {
+    let mut s = sample();
+    s.app.add_demo_tab("core-sw1", Some(s.core_sw), b"");
+    s.app.demo_pending(Pending::Prompt(Prompt {
+        name: None,
+        instruction: None,
+        from_server: false,
+        fields: vec![PromptField {
+            text: "admin@sw1's password: ".into(),
+            echo: false,
+        }],
+    }));
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    h.get_by_role(egui::accesskit::Role::PasswordInput)
+        .type_text("secret");
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(
+        h.state().focused_pending_is_none(),
+        "Enter did not answer the prompt"
+    );
+}
+
+fn listening_peer() -> u16 {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 64];
+                while matches!(stream.read(&mut buf), Ok(n) if n > 0) {}
+            });
+        }
+    });
+    port
+}
+
+fn settle(h: &mut Harness<'_, App>, done: impl Fn(&App) -> bool) -> bool {
+    for _ in 0..300 {
+        h.step();
+        if done(h.state()) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    false
+}
+
+#[test]
+fn quick_connections_are_kept_once_they_work_without_duplicates() {
+    let port = listening_peer();
+    let address = format!("raw://127.0.0.1:{port}");
+    let mut app = App::new(location());
+    app.quick_open_like_the_sidebar(&address);
+    let mut h = harness(app);
+    assert!(
+        settle(&mut h, |a| a.quick_folder_sessions().len() == 1),
+        "never saved"
+    );
+    assert_eq!(h.state().quick_folder_sessions(), ["127.0.0.1"]);
+
+    // Same place again: one entry, not two.
+    h.state_mut().quick_open_like_the_sidebar(&address);
+    assert!(
+        settle(&mut h, |a| a.focused_session().is_some()),
+        "second connection not filed"
+    );
+    assert_eq!(h.state().quick_folder_sessions().len(), 1);
+    assert!(h.query_by_label("Quick sessions").is_some());
+}
+
+#[test]
+fn a_quick_connection_that_fails_is_not_saved() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let mut app = App::new(location());
+    app.quick_open_like_the_sidebar(&format!("raw://127.0.0.1:{port}"));
+    let mut h = harness(app);
+    for _ in 0..50 {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(h.state().quick_folder_sessions().is_empty());
+}
+
+#[test]
+fn the_sidebar_can_be_hidden_and_brought_back() {
+    let s = sample();
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    assert!(h.query_by_label("Bench console").is_some());
+    h.get_by_label("‹").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Bench console").is_none(), "still showing");
+    h.get_by_label("›").click();
+    h.run_steps(3);
+    assert!(
+        h.query_by_label("Bench console").is_some(),
+        "did not come back"
+    );
+}

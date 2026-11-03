@@ -172,7 +172,14 @@ impl Resolved {
         if let (Some(identity), Protocol::Ssh) = (identity, target.protocol) {
             s.set("TryAgent", i32::from(identity.use_agent));
             if !identity.key_file.is_empty() {
-                s.set("PublicKeyFile", &identity.key_file);
+                // PuTTY takes the path literally, unlike a shell.
+                let path = match identity.key_file.strip_prefix("~/") {
+                    Some(rest) => directories::BaseDirs::new()
+                        .map(|d| d.home_dir().join(rest).display().to_string())
+                        .unwrap_or_else(|| identity.key_file.clone()),
+                    None => identity.key_file.clone(),
+                };
+                s.set("PublicKeyFile", path);
             }
         }
         s
