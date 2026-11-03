@@ -28,11 +28,13 @@
 
 - MCP server: off by default, loopback with a token, per-pane read or control that is never saved.
 
+- Snippet sharing by exported file.
+
 ## In progress
-- Next: snippet sharing, then the analyze step again.
+- Nothing. The requirements list is complete, pending real desktop testing.
 
 ## Next
-- Snippet sharing.
+- Whatever real use of the window turns up.
 
 ## Blocked
 - Nothing.

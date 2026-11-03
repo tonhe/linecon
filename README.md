@@ -24,6 +24,10 @@ what was allowed, and can allow legacy algorithms with one click:
 
 ![Negotiation failure report](docs/screenshots/failure.png)
 
+A file browser opens on request, on the same connection settings:
+
+![SFTP file browser](docs/screenshots/files.png)
+
 Early development; see [docs/STATUS.md](docs/STATUS.md).
 
 ## Install

@@ -592,9 +592,76 @@ pub fn import_path(path: &Path) -> Result<Option<ImportResult>, String> {
     Ok(None)
 }
 
+// ------------------------------------------------------------------- Snippets
+
+/// Marks a file as shared snippets, so it can be recognised when dropped.
+const SNIPPET_FORMAT: &str = "linecon-snippets-1";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SnippetFile {
+    format: String,
+    snippets: Vec<crate::model::Snippet>,
+}
+
+pub fn export_snippets(snippets: &[&crate::model::Snippet]) -> Result<String, String> {
+    let file = SnippetFile {
+        format: SNIPPET_FORMAT.to_string(),
+        snippets: snippets.iter().map(|s| (*s).clone()).collect(),
+    };
+    toml::to_string_pretty(&file).map_err(|e| e.to_string())
+}
+
+/// Reads a snippet file. `None` means this is not one.
+pub fn parse_snippets(text: &str) -> Option<Vec<crate::model::Snippet>> {
+    let file: SnippetFile = toml::from_str(text).ok()?;
+    (file.format == SNIPPET_FORMAT).then_some(file.snippets)
+}
+
+/// Adds snippets to a list, skipping exact duplicates. Returns how many were new.
+pub fn merge_snippets(
+    into: &mut Vec<crate::model::Snippet>,
+    new: Vec<crate::model::Snippet>,
+) -> usize {
+    let mut added = 0;
+    for snippet in new {
+        if !into.contains(&snippet) {
+            into.push(snippet);
+            added += 1;
+        }
+    }
+    added
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snippets_round_trip_and_merge_without_duplicates() {
+        use crate::model::Snippet;
+        let a = Snippet {
+            name: "health".into(),
+            text: "show env\nshow proc cpu\n".into(),
+        };
+        let b = Snippet {
+            name: "quotes \"here\"".into(),
+            text: "echo 'x'".into(),
+        };
+        let text = export_snippets(&[&a, &b]).unwrap();
+        assert_eq!(parse_snippets(&text).unwrap(), [a.clone(), b.clone()]);
+        let mut list = vec![a.clone()];
+        assert_eq!(merge_snippets(&mut list, vec![a.clone(), b.clone()]), 1);
+        assert_eq!(list, [a.clone(), b]);
+        // Same name with different text is a different snippet, and nothing is replaced.
+        let changed = Snippet {
+            name: "health".into(),
+            text: "other".into(),
+        };
+        assert_eq!(merge_snippets(&mut list, vec![changed]), 1);
+        assert_eq!(list[0], a);
+        assert!(parse_snippets("format = \"something-else\"\nsnippets = []\n").is_none());
+        assert!(parse_snippets("Host x\n  User y\n").is_none());
+    }
 
     const SSH: &str = "\
 # defaults\n\

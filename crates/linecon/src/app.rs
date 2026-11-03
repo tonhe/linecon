@@ -132,6 +132,7 @@ enum Command {
     RunSnippet(String),
     ToggleFiles,
     ToggleAgentServer,
+    ExportSnippets,
     SetAgentAccess(Access),
     ImportSshConfig,
     #[cfg(windows)]
@@ -498,6 +499,7 @@ impl App {
             Command::Open(id) => self.open_saved(id),
             Command::RunSnippet(text) => self.run_snippet(&text),
             Command::ToggleFiles => self.toggle_files(),
+            Command::ExportSnippets => self.export_snippets(),
             Command::ToggleAgentServer => {
                 self.config.mcp_enabled = !self.config.mcp_enabled;
                 self.dirty = true;
@@ -573,6 +575,42 @@ impl App {
                 }
             }
         }
+    }
+
+    fn snippet_scope(&self) -> Option<Id> {
+        self.focused_pane()
+            .and_then(|id| self.panes.get(&id))
+            .and_then(|e| e.pane.spec.session_id)
+    }
+
+    fn export_snippets(&mut self) {
+        let snippets = self.config.snippets_for(self.snippet_scope());
+        if snippets.is_empty() {
+            self.error = Some("No snippets here to export.".to_string());
+            return;
+        }
+        let count = snippets.len();
+        let path = crate::sftp_pane::unused_path(&downloads_dir(), "linecon-snippets.toml");
+        let written = linecon_config::import::export_snippets(&snippets)
+            .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
+        match written {
+            Ok(()) => self.info = Some(format!("Exported {count} to {}", path.display())),
+            Err(e) => self.error = Some(e),
+        }
+    }
+
+    /// Adds a dropped snippet file to the selected folder, or globally.
+    fn import_snippets(&mut self, snippets: Vec<Snippet>) {
+        let folder = self
+            .selected_node
+            .filter(|id| matches!(self.config.find(*id), Some(Node::Folder(_))));
+        let list = match folder.and_then(|id| self.config.find_mut(id)) {
+            Some(Node::Folder(f)) => &mut f.snippets,
+            _ => &mut self.config.snippets,
+        };
+        let added = linecon_config::import::merge_snippets(list, snippets);
+        self.dirty = true;
+        self.info = Some(format!("Added {added} snippets"));
     }
 
     fn toggle_files(&mut self) {
@@ -831,6 +869,13 @@ impl App {
                     }
                     Err(e) => self.error = Some(format!("{}: {e}", path.display())),
                 }
+                continue;
+            }
+            let snippets = std::fs::read(&path).ok().and_then(|data| {
+                linecon_config::import::parse_snippets(&linecon_config::import::decode_text(&data))
+            });
+            if let Some(snippets) = snippets {
+                self.import_snippets(snippets);
                 continue;
             }
             match linecon_config::import::import_path(&path) {
@@ -1578,6 +1623,11 @@ impl App {
                 Command::ImportRegistry { kitty: true },
             );
         }
+        add(
+            "Export snippets to a file",
+            "share them by dropping it on a window",
+            Command::ExportSnippets,
+        );
         let scope = self
             .focused_pane()
             .and_then(|id| self.panes.get(&id))
