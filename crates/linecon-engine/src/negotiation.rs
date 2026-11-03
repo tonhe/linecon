@@ -12,7 +12,7 @@ use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use crate::algorithms::{AlgorithmPolicy, MACS};
+use crate::algorithms::{AlgorithmPolicy, SshVersion, MACS};
 
 /// What a server advertised in its SSH-2 KEXINIT.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -153,6 +153,14 @@ pub fn is_negotiation_failure(reason: &str) -> bool {
     MARKERS.iter().any(|m| reason.contains(m))
 }
 
+/// True if this failure means the device only speaks SSH-1 and the policy allows
+/// that. The caller reconnects with [`SshVersion::V1`].
+pub fn should_fall_back_to_ssh1(reason: &str, policy: &AlgorithmPolicy) -> bool {
+    policy.legacy
+        && policy.version == SshVersion::V2
+        && reason.contains("SSH protocol version 2 required")
+}
+
 impl NegotiationFailure {
     pub fn new(reason: &str, policy: &AlgorithmPolicy, offer: Option<ServerOffer>) -> Self {
         let owned = |v: Vec<&'static str>| v.into_iter().map(str::to_string).collect();
@@ -245,6 +253,25 @@ mod tests {
         assert!(text.contains("offered: diffie-hellman-group1-sha1"));
         assert!(text.contains("allowed: sntrup761x25519-sha512"));
         assert!(!text.contains("allowed: diffie-hellman-group1-sha1"));
+    }
+
+    #[test]
+    fn ssh1_fallback_needs_the_legacy_toggle() {
+        let reason = "SSH protocol version 2 required by our configuration but remote only provides (old, insecure) SSH-1";
+        assert!(should_fall_back_to_ssh1(reason, &AlgorithmPolicy::legacy()));
+        assert!(!should_fall_back_to_ssh1(
+            reason,
+            &AlgorithmPolicy::modern()
+        ));
+        let already = AlgorithmPolicy {
+            version: SshVersion::V1,
+            ..AlgorithmPolicy::legacy()
+        };
+        assert!(!should_fall_back_to_ssh1(reason, &already));
+        assert!(!should_fall_back_to_ssh1(
+            "Connection refused",
+            &AlgorithmPolicy::legacy()
+        ));
     }
 
     #[test]

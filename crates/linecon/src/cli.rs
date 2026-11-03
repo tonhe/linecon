@@ -246,6 +246,7 @@ impl Escapes {
 }
 
 fn connect(settings: &Settings, policy: &AlgorithmPolicy) -> i32 {
+    let mut policy = policy.clone();
     // "Trust and remember" has to outlive this process.
     let location = ConfigLocation::detect();
     match KnownHostsFile::open(&location.known_hosts_file()) {
@@ -257,13 +258,16 @@ fn connect(settings: &Settings, policy: &AlgorithmPolicy) -> i32 {
     if let Ok((cols, rows)) = crossterm::terminal::size() {
         settings.terminal_size(cols, rows);
     }
-    let session = match Session::open(&settings) {
+    let mut session = match Session::open(&settings) {
         Ok(session) => Arc::new(session),
         Err(e) => {
             eprintln!("{e}");
             return 1;
         }
     };
+    // The reader thread sends to whichever session is current, so reconnecting
+    // for SSH-1 does not need a second reader competing for the keyboard.
+    let current = Arc::new(Mutex::new(session.clone()));
     let raw = Arc::new(RawMode::enable());
     let input = Arc::new(Input {
         answering: AtomicBool::new(false),
@@ -272,7 +276,7 @@ fn connect(settings: &Settings, policy: &AlgorithmPolicy) -> i32 {
     });
 
     {
-        let session = session.clone();
+        let current = current.clone();
         let input = input.clone();
         let raw = raw.clone();
         std::thread::spawn(move || {
@@ -280,6 +284,7 @@ fn connect(settings: &Settings, policy: &AlgorithmPolicy) -> i32 {
             let mut buf = [0u8; 4096];
             let mut escapes = Escapes::default();
             while let Ok(n) = stdin.read(&mut buf) {
+                let session = current.lock().unwrap().clone();
                 if n == 0 {
                     session.special(Special::Eof);
                     break;
@@ -317,9 +322,9 @@ fn connect(settings: &Settings, policy: &AlgorithmPolicy) -> i32 {
     let mut failure = None;
     let mut size = crossterm::terminal::size().ok();
     loop {
-        let current = crossterm::terminal::size().ok();
-        if current != size {
-            size = current;
+        let new_size = crossterm::terminal::size().ok();
+        if new_size != size {
+            size = new_size;
             if let Some((cols, rows)) = size {
                 session.resize(cols, rows);
             }
@@ -376,11 +381,29 @@ fn connect(settings: &Settings, policy: &AlgorithmPolicy) -> i32 {
                 failure.get_or_insert(reason);
             }
             Ok(Event::Closed { exit_code, reason }) => {
-                raw.restore();
-                let reason = failure.or(reason);
+                let reason = failure.take().or(reason);
                 if let Some(reason) = &reason {
-                    report_failure(reason, &settings, policy);
+                    if negotiation::should_fall_back_to_ssh1(reason, &policy) {
+                        // Same reader thread, new session: it follows `current`.
+                        policy.version = SshVersion::V1;
+                        settings.algorithms(&policy);
+                        match Session::open(&settings) {
+                            Ok(new) => {
+                                session = Arc::new(new);
+                                *current.lock().unwrap() = session.clone();
+                                continue;
+                            }
+                            Err(e) => {
+                                raw.restore();
+                                eprintln!("{e}");
+                                return 1;
+                            }
+                        }
+                    }
+                    raw.restore();
+                    report_failure(reason, &settings, &policy);
                 }
+                raw.restore();
                 return exit_code.unwrap_or(i32::from(reason.is_some()));
             }
             Ok(_) | Err(RecvError::Timeout) => {}

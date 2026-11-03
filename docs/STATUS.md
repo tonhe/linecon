@@ -20,8 +20,10 @@
 - Imports from ~/.ssh/config, PuTTY and KiTTY (registry, .reg, portable files) and SecureCRT, by palette
   or by dropping files on the window. Stored passwords are not imported. Snippets with folder scope.
 
+- The legacy toggle now reaches SSH-1-only devices by itself. Auto-reconnect retries real drops only.
+
 ## In progress
-- Nothing mid-task; next feature is being specified.
+- Gaps found by comparing the brief with the code (`specs/007-hardening`).
 
 ## Next
 - SFTP pane, MCP server, snippet sharing.

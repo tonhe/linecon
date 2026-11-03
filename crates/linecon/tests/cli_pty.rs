@@ -34,7 +34,10 @@ impl Drop for Container {
 fn start_server() -> Option<(Container, u16)> {
     let context = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/docker/legacy-sshd");
     docker(&["build", "-q", "-t", IMAGE, context.to_str()?])?;
-    let name = format!("linecon-cli-{}", std::process::id());
+    // Tests in this file run in parallel, each with its own server.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = format!("linecon-cli-{}-{n}", std::process::id());
     docker(&["run", "-d", "--rm", "--name", &name, "-P", IMAGE])?;
     let container = Container(name);
     let port = docker(&["port", &container.0, "2201"])?
@@ -176,6 +179,45 @@ fn a_person_can_log_in_and_the_host_key_is_remembered() {
     term.type_text("lab-password\r");
     term.expect("$");
     term.type_text("exit\r");
+    wait_for_exit(&mut child);
+    let _ = std::fs::remove_dir_all(&config);
+}
+
+/// The legacy flag alone reaches an SSH-1-only device, and typing still works
+/// after the client reconnects to do that.
+#[test]
+fn legacy_flag_falls_back_to_ssh1_and_keeps_the_keyboard() {
+    let Some((container, _)) = start_server() else {
+        assert!(
+            std::env::var_os("LINECON_REQUIRE_DOCKER").is_none(),
+            "Docker is required here"
+        );
+        eprintln!("SKIPPED: no container runtime");
+        return;
+    };
+    let port = docker(&["port", &container.0, "2203"])
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .to_string();
+    let config = std::env::temp_dir().join(format!("linecon-cli-ssh1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&config);
+    std::fs::create_dir_all(&config).unwrap();
+    let args: Vec<String> = ["ssh", "127.0.0.1", &port, "lab", "--legacy"]
+        .map(String::from)
+        .to_vec();
+    let (mut child, mut term) = spawn_on_pty(&args, &config);
+    term.expect("Trust this key?");
+    term.type_text("o\r");
+    term.expect("password:");
+    term.type_text("lab-password\r");
+    term.expect("$");
+    term.type_text("echo MARKER-$((40+2)); exit\r");
+    term.expect("MARKER-42");
     wait_for_exit(&mut child);
     let _ = std::fs::remove_dir_all(&config);
 }

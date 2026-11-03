@@ -504,3 +504,164 @@ fn dropping_session_files_imports_them() {
     assert_eq!(app.config.identities[0].username, "ops");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// A console server dropping the connection comes back by itself.
+#[test]
+fn a_dropped_connection_reconnects_when_asked_to() {
+    use crate::pane::{Pane, PaneSpec, Status};
+    use linecon_engine::algorithms::AlgorithmPolicy;
+    use linecon_engine::settings::Settings;
+    use std::io::Write;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        // First connection is dropped straight away, the second stays up.
+        let (mut first, _) = listener.accept().unwrap();
+        first.write_all(b"first\r\n").unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        drop(first);
+        let (mut second, _) = listener.accept().unwrap();
+        second.write_all(b"second\r\n").unwrap();
+        std::thread::sleep(Duration::from_secs(30));
+    });
+    let spec = PaneSpec {
+        name: "console".into(),
+        session_id: None,
+        settings: Settings::raw("127.0.0.1", port),
+        policy: AlgorithmPolicy::modern(),
+        log_dir: None,
+        scrollback: 1000,
+        copy_on_select: true,
+        auto_reconnect: true,
+        accept_weak: false,
+        password: None,
+    };
+    let mut pane = Pane::new(spec, Arc::new(|| {}));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let sees = |pane: &Pane, text: &str| {
+        pane.shared
+            .core
+            .lock()
+            .unwrap()
+            .visible_lines()
+            .iter()
+            .any(|l| l.contains(text))
+    };
+    while !sees(&pane, "second") {
+        assert!(
+            Instant::now() < deadline,
+            "never reconnected: {:?}",
+            pane.status()
+        );
+        pane.tick_reconnect();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // What came before the drop is still on screen.
+    assert!(sees(&pane, "first"));
+    assert_eq!(pane.status(), Status::Live);
+}
+
+/// The legacy toggle alone gets a user onto an SSH-1-only device.
+#[test]
+fn legacy_toggle_reaches_an_ssh1_only_device() {
+    use crate::pane::{Pane, PaneSpec, Status};
+    use linecon_engine::HostKeyVerdict;
+    use std::process::Command;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use zeroize::Zeroizing;
+
+    let docker = |args: &[&str]| -> Option<String> {
+        let out = Command::new("docker").args(args).output().ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let context = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/docker/legacy-sshd"
+    );
+    let name = format!("linecon-ssh1-{}", std::process::id());
+    let started = docker(&["build", "-q", "-t", "linecon-legacy-sshd", context]).and_then(|_| {
+        docker(&[
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            &name,
+            "-P",
+            "linecon-legacy-sshd",
+        ])
+    });
+    if started.is_none() {
+        assert!(
+            std::env::var_os("LINECON_REQUIRE_DOCKER").is_none(),
+            "Docker is required here"
+        );
+        eprintln!("SKIPPED: no container runtime");
+        return;
+    }
+    struct Stop<'a>(&'a str);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            let _ = Command::new("docker").args(["rm", "-f", self.0]).output();
+        }
+    }
+    let _stop = Stop(&name);
+    let port: u16 = docker(&["port", &name, "2203"])
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+
+    let mut config = linecon_config::Config::default();
+    config.settings.legacy_algorithms = Some(true);
+    let resolved = config.resolve_root();
+    let target = Target {
+        host: "127.0.0.1".into(),
+        port: Some(port),
+        ..Default::default()
+    };
+    let spec = PaneSpec {
+        name: "ancient".into(),
+        session_id: None,
+        settings: resolved.engine_settings(&target, "lab"),
+        policy: resolved.algorithm_policy(),
+        log_dir: None,
+        scrollback: 1000,
+        copy_on_select: true,
+        auto_reconnect: false,
+        accept_weak: true,
+        password: Some(Arc::new(|| {
+            Some(Zeroizing::new("lab-password".to_string()))
+        })),
+    };
+    let mut pane = Pane::new(spec, Arc::new(|| {}));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while pane.status() != Status::Live {
+        assert!(
+            Instant::now() < deadline,
+            "never connected: {:?}",
+            pane.status()
+        );
+        let pending = pane.shared.pending.lock().unwrap().clone();
+        if let Some(Pending::HostKey(_)) = pending {
+            pane.answer_hostkey(HostKeyVerdict::AcceptOnce);
+        }
+        pane.tick_reconnect();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        pane.spec.policy.version,
+        linecon_engine::algorithms::SshVersion::V1
+    );
+}

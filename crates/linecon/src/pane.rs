@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use linecon_config::Id;
-use linecon_engine::algorithms::AlgorithmPolicy;
+use linecon_engine::algorithms::{AlgorithmPolicy, SshVersion};
 use linecon_engine::negotiation::{self, NegotiationFailure};
 use linecon_engine::settings::Settings;
 use linecon_engine::{Event, HostKeyPrompt, HostKeyVerdict, Prompt, RecvError, Session, Special};
@@ -75,6 +75,12 @@ pub struct PaneShared {
     pub clipboard: Mutex<Option<String>>,
     pub local_echo: AtomicBool,
     pub stop: AtomicBool,
+    /// Has this pane ever had a working connection?
+    pub ever_live: AtomicBool,
+    /// May auto-reconnect act on the current closure?
+    pub may_retry: AtomicBool,
+    /// The device only speaks SSH-1, and the legacy toggle allows it.
+    pub wants_ssh1: AtomicBool,
 }
 
 pub struct Pane {
@@ -103,6 +109,9 @@ impl Pane {
             clipboard: Mutex::new(None),
             local_echo: AtomicBool::new(false),
             stop: AtomicBool::new(false),
+            ever_live: AtomicBool::new(false),
+            may_retry: AtomicBool::new(false),
+            wants_ssh1: AtomicBool::new(false),
         });
         let mut pane = Self {
             spec,
@@ -130,6 +139,9 @@ impl Pane {
             clipboard: Mutex::new(None),
             local_echo: AtomicBool::new(false),
             stop: AtomicBool::new(false),
+            ever_live: AtomicBool::new(false),
+            may_retry: AtomicBool::new(false),
+            wants_ssh1: AtomicBool::new(false),
         });
         Self {
             spec,
@@ -232,14 +244,21 @@ impl Pane {
         }
     }
 
-    /// Reconnects on a schedule if this session asked for that and the close
-    /// was not caused by something a retry cannot fix.
+    /// Follow-up after a closure: fall back to SSH-1 if that is what the device
+    /// needs, otherwise reconnect on a schedule if this session asked for that.
     pub fn tick_reconnect(&mut self) {
+        if self.shared.wants_ssh1.swap(false, Ordering::SeqCst) {
+            self.spec.policy.version = SshVersion::V1;
+            let policy = self.spec.policy.clone();
+            self.spec.settings.algorithms(&policy);
+            self.connect();
+            return;
+        }
         if !self.spec.auto_reconnect {
             return;
         }
         match self.status() {
-            Status::Closed { .. } if self.shared.failure.lock().unwrap().is_none() => {
+            Status::Closed { .. } if self.shared.may_retry.load(Ordering::SeqCst) => {
                 let now = Instant::now();
                 match self.reconnect_at {
                     None => {
@@ -256,6 +275,21 @@ impl Pane {
             _ => {}
         }
     }
+}
+
+/// Whether a closed connection is worth retrying automatically. It must have
+/// worked at some point, or retrying just repeats a mistake. An SSH exit status
+/// means the remote session ended on purpose; Telnet and raw report 0 for any
+/// close, so they are always treated as a drop. Anything the user refused stays
+/// refused.
+pub fn may_retry(
+    ever_live: bool,
+    is_ssh: bool,
+    exit_code: Option<i32>,
+    reason: Option<&str>,
+) -> bool {
+    let refused = reason.is_some_and(|r| r.contains("aborted") || r.contains("abandoned"));
+    ever_live && !refused && !(is_ssh && exit_code.is_some())
 }
 
 impl Drop for Pane {
@@ -304,6 +338,7 @@ fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint:
             Event::Started | Event::SendOk => {
                 if !sent_started {
                     sent_started = true;
+                    shared.ever_live.store(true, Ordering::SeqCst);
                     *shared.status.lock().unwrap() = Status::Live;
                 }
             }
@@ -340,8 +375,22 @@ fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint:
             Event::Fatal(reason) => {
                 weak_reason.get_or_insert(reason);
             }
-            Event::Closed { reason, .. } => {
+            Event::Closed { reason, exit_code } => {
                 let reason = weak_reason.take().or(reason);
+                let is_ssh = spec.settings.get("Protocol") == Some("ssh");
+                let ever_live = shared.ever_live.load(Ordering::SeqCst);
+                shared.may_retry.store(
+                    may_retry(ever_live, is_ssh, exit_code, reason.as_deref()),
+                    Ordering::SeqCst,
+                );
+                if reason
+                    .as_deref()
+                    .is_some_and(|r| negotiation::should_fall_back_to_ssh1(r, &spec.policy))
+                {
+                    shared.wants_ssh1.store(true, Ordering::SeqCst);
+                    repaint();
+                    break;
+                }
                 if let Some(text) = &reason {
                     if negotiation::is_negotiation_failure(text) {
                         let host = spec.settings.get("HostName").unwrap_or_default();
@@ -383,6 +432,31 @@ mod tests {
                 echo,
             }],
         }
+    }
+
+    #[test]
+    fn retry_rules() {
+        // A device dropping a working connection is the case this is for.
+        assert!(may_retry(
+            true,
+            true,
+            None,
+            Some("Network error: Connection reset")
+        ));
+        assert!(may_retry(true, false, Some(0), None));
+        // Typing exit ends an SSH session on purpose, whatever its status.
+        assert!(!may_retry(true, true, Some(0), None));
+        assert!(!may_retry(true, true, Some(1), None));
+        // Never worked: bad address, wrong password, and so on.
+        assert!(!may_retry(false, true, None, Some("Connection refused")));
+        assert!(!may_retry(false, false, None, None));
+        // The user said no.
+        assert!(!may_retry(
+            true,
+            true,
+            None,
+            Some("User aborted at host key verification")
+        ));
     }
 
     #[test]

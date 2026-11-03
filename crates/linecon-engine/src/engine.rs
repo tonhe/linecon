@@ -195,7 +195,8 @@ unsafe extern "C" fn on_event(ev: *const sys::lc_event) -> usize {
         sys::LC_EV_LOG => Event::Log(opt_string(ev.text).unwrap_or_default()),
         sys::LC_EV_FATAL => Event::Fatal(opt_string(ev.text).unwrap_or_default()),
         sys::LC_EV_CLOSED => Event::Closed {
-            exit_code: (ev.arg >= 0).then_some(ev.arg),
+            // PuTTY reports INT_MAX for a connection lost with no exit status.
+            exit_code: (ev.arg >= 0 && ev.arg != i32::MAX).then_some(ev.arg),
             reason: opt_string(ev.text),
         },
         _ => return 0,
