@@ -146,10 +146,22 @@ impl Node {
     }
 }
 
+/// Light or dark window chrome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Appearance {
+    /// Follow the terminal theme.
+    #[default]
+    Auto,
+    Light,
+    Dark,
+}
+
 /// Everything saved in the config file. Secrets are stored elsewhere by id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub appearance: Appearance,
     /// Settings applied at the root, beneath every folder.
     pub settings: Overrides,
     pub next_id: Id,
@@ -159,6 +171,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            appearance: Appearance::Auto,
             settings: Overrides::default(),
             next_id: 1,
             nodes: Vec::new(),

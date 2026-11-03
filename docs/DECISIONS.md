@@ -69,3 +69,16 @@ its natural "no common cipher" case.
 The UI needs glibc to load X11 and Wayland at runtime, so a musl static binary is
 not an option. Building on the oldest supported runner gives the widest glibc
 compatibility. Windows links the C runtime statically for the same reason.
+
+## 2026-11-03: Settings live in an inspector, commands in a palette
+
+There is no settings dialog or toolbar. A right-hand inspector opens for one node at a time
+and shows each value's source; a command palette reaches everything else. Theme files are
+imported by dropping them on the window, which avoids a file dialog dependency.
+
+## 2026-11-03: Ctrl+C and friends go to the device
+
+egui's window layer turns Ctrl+C, X and V into clipboard events and swallows the key. A
+network engineer needs those as control characters, so the view maps them back. Copy and paste
+are Ctrl+Shift+C and V, or Cmd on macOS. One known limit: Ctrl+V with an empty clipboard sends
+nothing, because egui emits no event for it.

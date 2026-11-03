@@ -90,6 +90,11 @@ inheritable! {
 const PROXY_SSH_TCPIP: i32 = 6;
 
 impl Config {
+    /// Effective settings at the root: what a session outside any folder sees.
+    pub fn resolve_root(&self) -> Resolved {
+        Resolved::from_layers(&[(&self.settings, Source::Own)])
+    }
+
     /// Effective settings for a node. For a folder, this is what its children
     /// would see. `None` if the node does not exist.
     pub fn resolve(&self, id: Id) -> Option<Resolved> {

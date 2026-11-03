@@ -62,6 +62,10 @@ impl ConfigLocation {
         self.dir.join("known_hosts")
     }
 
+    pub fn themes_dir(&self) -> PathBuf {
+        self.dir.join("themes")
+    }
+
     pub fn logs_dir(&self) -> PathBuf {
         self.dir.join("logs")
     }
