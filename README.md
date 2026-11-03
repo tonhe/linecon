@@ -34,8 +34,8 @@ Early development; see [docs/STATUS.md](docs/STATUS.md).
 
 Downloads are on the [releases page](https://github.com/tonhe/linecon/releases).
 
-- **macOS**: unzip `linecon0-macos-*.app.zip` (`arm64` for Apple silicon, `x64` for Intel). The app
-  is not notarized yet, so macOS blocks it at first. Either run
+- **macOS**: unzip `linecon0-macos-*.app.zip` (`arm64` for Apple silicon, `x64` for Intel). Until releases
+  are notarized, macOS blocks it at first. Either run
   `xattr -dr com.apple.quarantine linecon0.app`, or try to open it once and then choose
   Open Anyway under System Settings > Privacy & Security. The `.tar.gz` is the same program as a
   bare executable for terminal use.

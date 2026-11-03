@@ -4,6 +4,52 @@
 set -eu
 name="$1"
 mkdir -p dist
+
+# Signs with a Developer ID and notarizes. See docs/macos-signing.md.
+sign_and_notarize() {
+  app_path="$1"
+  bare="$2"
+  for needed in MACOS_CERT_P12 MACOS_CERT_PASSWORD APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER; do
+    eval "value=\${$needed:-}"
+    if [ -z "$value" ]; then
+      echo "$needed is not set; refusing to ship a half-signed release" >&2
+      exit 1
+    fi
+  done
+  work=$(mktemp -d)
+  keychain="$work/signing.keychain-db"
+  keychain_password=$(uuidgen)
+  trap 'security delete-keychain "$keychain" 2>/dev/null || true; rm -rf "$work"' EXIT
+  printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$work/cert.p12"
+  printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$work/key.p8"
+  security create-keychain -p "$keychain_password" "$keychain"
+  security set-keychain-settings -lut 3600 "$keychain"
+  security unlock-keychain -p "$keychain_password" "$keychain"
+  security import "$work/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+  security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+  security list-keychains -d user -s "$keychain" login.keychain-db
+  identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)
+  if [ -z "$identity" ]; then
+    echo "no Developer ID Application certificate in MACOS_CERT_P12" >&2
+    exit 1
+  fi
+  sign() { codesign --force --options runtime --timestamp --sign "$identity" "$@"; }
+  sign --identifier io.github.tonhe.linecon "$bare"
+  cp "$bare" "$app_path/Contents/MacOS/linecon"
+  sign "$app_path"
+  notarize() {
+    xcrun notarytool submit "$1" --key "$work/key.p8" --key-id "$APPLE_API_KEY_ID" \
+      --issuer "$APPLE_API_ISSUER" --wait --timeout 30m
+  }
+  ditto -c -k --keepParent "$app_path" "$work/app.zip"
+  notarize "$work/app.zip"
+  xcrun stapler staple "$app_path"
+  xcrun stapler validate "$app_path"
+  spctl --assess --type execute --verbose=2 "$app_path"
+  # A bare executable cannot hold a ticket, but Apple's servers know it once submitted.
+  ditto -c -k "$bare" "$work/bare.zip"
+  notarize "$work/bare.zip"
+}
 case "$name" in
   windows-*)
     cp target/release/linecon.exe "dist/linecon-$name.exe"
@@ -23,13 +69,21 @@ case "$name" in
     iconutil -c icns dist/linecon.iconset -o "$app/Contents/Resources/linecon.icns"
     rm -rf dist/linecon.iconset
     test -s "$app/Contents/Resources/linecon.icns"
-    # Ad-hoc only: not notarized, so Gatekeeper still objects to a download.
-    codesign --force --deep --sign - "$app"
+    tar_dir=$(mktemp -d)
+    cp target/release/linecon "$tar_dir/linecon"
+    if [ -n "${MACOS_CERT_P12:-}${APPLE_API_KEY_P8:-}" ]; then
+      sign_and_notarize "$app" "$tar_dir/linecon"
+    else
+      # Without credentials: Gatekeeper still objects to a download.
+      codesign --force --sign - "$tar_dir/linecon"
+      cp "$tar_dir/linecon" "$app/Contents/MacOS/linecon"
+      codesign --force --deep --sign - "$app"
+    fi
     codesign --verify --deep --strict "$app"
     "$app/Contents/MacOS/linecon" --version
     (cd dist && ditto -c -k --keepParent linecon0.app "linecon0-$name.app.zip")
     rm -rf "$app"
-    tar -czf "dist/linecon-$name.tar.gz" -C target/release linecon
+    tar -czf "dist/linecon-$name.tar.gz" -C "$tar_dir" linecon
     ;;
   *)
     tar -czf "dist/linecon-$name.tar.gz" -C target/release linecon

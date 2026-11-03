@@ -59,6 +59,13 @@ jobs:
         run: target/release/linecon --version
       - name: Package
         shell: bash
+        # Tags only: nothing else needs these, and pull requests must never see them.
+        env:
+          MACOS_CERT_P12: ${{ github.ref_type == 'tag' && secrets.MACOS_CERT_P12 || '' }}
+          MACOS_CERT_PASSWORD: ${{ github.ref_type == 'tag' && secrets.MACOS_CERT_PASSWORD || '' }}
+          APPLE_API_KEY_P8: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY_P8 || '' }}
+          APPLE_API_KEY_ID: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && secrets.APPLE_API_ISSUER || '' }}
         run: packaging/package.sh "${{ matrix.name }}"
       - uses: actions/upload-artifact@v4
         with:

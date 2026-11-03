@@ -168,3 +168,8 @@ Quick connections reused any login with the same username, which would have sent
 another. Usernames like admin say nothing about passwords. Automatically saved sessions now only share a login
 holding no password, and remembering a password never changes a login that other sessions use. Sharing is still
 possible by choosing the same login in settings.
+
+## 2026-11-03: Signing runs only for tags, and half-configured signing fails
+
+The signing secrets reach only the packaging step of tag builds, in a throwaway keychain. Having some secrets but
+not others stops the release rather than silently shipping unsigned. With none set, builds stay ad-hoc.
