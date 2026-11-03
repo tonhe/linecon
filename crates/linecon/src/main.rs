@@ -36,7 +36,11 @@ fn main() {
             .with_title("linecon0")
             .with_app_id("linecon")
             .with_inner_size([1100.0, 700.0])
-            .with_min_inner_size([420.0, 260.0]),
+            .with_min_inner_size([420.0, 260.0])
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
+                    .expect("the bundled icon is a valid PNG"),
+            ),
         ..Default::default()
     };
     let location = linecon_config::ConfigLocation::detect();

@@ -58,6 +58,7 @@
 - Windows and macOS do not run the Docker legacy test, because hosted runners lack a Linux
   container runtime. They run the loopback tests, and the protocol code is shared.
 - Ctrl+V with an empty clipboard sends nothing.
+- The system clipboard on macOS awaits confirmation on a build that has the clipboard fix.
 - OS secret stores are only automatically tested on Windows; Keychain has not been confirmed on a real Mac,
   and secret-service needs a logged-in desktop session.
 - Pageant and the 1Password agent are untested. A remote forward has no automated test.

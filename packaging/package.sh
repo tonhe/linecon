@@ -14,6 +14,15 @@ case "$name" in
     mkdir -p "$app/Contents/MacOS"
     cp target/release/linecon "$app/Contents/MacOS/linecon"
     sed "s/VERSION/$version/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+    mkdir -p "$app/Contents/Resources" dist/linecon.iconset
+    for size in 16 32 128 256 512; do
+      double=$((size * 2))
+      sips -z "$size" "$size" packaging/icon/linecon.png --out "dist/linecon.iconset/icon_${size}x${size}.png" >/dev/null
+      sips -z "$double" "$double" packaging/icon/linecon.png --out "dist/linecon.iconset/icon_${size}x${size}@2x.png" >/dev/null
+    done
+    iconutil -c icns dist/linecon.iconset -o "$app/Contents/Resources/linecon.icns"
+    rm -rf dist/linecon.iconset
+    test -s "$app/Contents/Resources/linecon.icns"
     # Ad-hoc only: not notarized, so Gatekeeper still objects to a download.
     codesign --force --deep --sign - "$app"
     codesign --verify --deep --strict "$app"

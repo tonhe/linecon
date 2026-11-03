@@ -11,3 +11,4 @@
 - [X] T009 Clipboard and screen reader support, which were left disabled at build time
 - [X] T010 Delete confirmation on screen, Escape closes search, status messages expire, sidebar follows focus
 - [X] T011 Saved passwords stay with their own session
+- [X] T012 App icon on macOS, Windows and the Linux window
