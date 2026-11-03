@@ -131,3 +131,9 @@ void read_random_seed(noise_consumer_t consumer) {}
 void write_random_seed(void *data, int len) {}
 
 void cleanup_all(void) {}
+
+#ifdef _WIN32
+/* PuTTY's settings loader updates the Windows jump list; we keep none. */
+void add_session_to_jumplist(const char *sessionname) {}
+void remove_session_from_jumplist(const char *sessionname) {}
+#endif
