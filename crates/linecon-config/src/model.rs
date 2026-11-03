@@ -303,6 +303,22 @@ impl Config {
         self.identities.iter_mut().find(|i| i.id == id)
     }
 
+    /// How many folders and sessions name this login directly, plus the root.
+    pub fn login_users(&self, id: Id) -> usize {
+        fn count(nodes: &[Node], id: Id) -> usize {
+            nodes
+                .iter()
+                .map(|n| match n {
+                    Node::Folder(f) => {
+                        usize::from(f.settings.identity == Some(id)) + count(&f.children, id)
+                    }
+                    Node::Session(s) => usize::from(s.settings.identity == Some(id)),
+                })
+                .sum()
+        }
+        usize::from(self.settings.identity == Some(id)) + count(&self.nodes, id)
+    }
+
     /// Removes an identity and every reference to it, so nothing silently
     /// inherits a login that no longer exists.
     pub fn remove_identity(&mut self, id: Id) -> Option<Identity> {
@@ -497,6 +513,19 @@ mod tests {
         assert_eq!(names(Some(sw)), ["global", "site-wide", "core-only"]);
         assert_eq!(names(Some(elsewhere)), ["global", "other-only"]);
         assert_eq!(names(None), ["global"]);
+    }
+
+    #[test]
+    fn login_users_counts_every_direct_reference() {
+        let mut c = Config::default();
+        let who = c.add_identity("ops", "admin");
+        assert_eq!(c.login_users(who), 0);
+        let site = c.add_folder(None, "site").unwrap();
+        c.overrides_mut(site).unwrap().identity = Some(who);
+        let sw = c.add_session(Some(site), "sw", target()).unwrap();
+        c.overrides_mut(sw).unwrap().identity = Some(who);
+        c.settings.identity = Some(who);
+        assert_eq!(c.login_users(who), 3);
     }
 
     #[test]

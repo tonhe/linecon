@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::index::Point;
 use egui::text::{CCursor, CCursorRange};
@@ -172,6 +172,8 @@ pub struct App {
     password_drafts: HashMap<Id, Zeroizing<String>>,
     error: Option<String>,
     info: Option<String>,
+    /// The message `info` held last frame and when it appeared, so it can fade.
+    info_shown: Option<(String, Instant)>,
     tabs: Vec<Tab>,
     active_tab: usize,
     panes: HashMap<PaneId, PaneEntry>,
@@ -191,6 +193,7 @@ pub struct App {
     /// Panes to close once drawing has finished.
     closing: Vec<PaneId>,
     last_focus: Option<egui::Id>,
+    last_focused_session: Option<Id>,
     pending_delete: Option<Id>,
 }
 
@@ -278,6 +281,7 @@ impl App {
             config_error,
             error: None,
             info: None,
+            info_shown: None,
             tabs: Vec::new(),
             active_tab: 0,
             panes: HashMap::new(),
@@ -296,6 +300,7 @@ impl App {
             selected_node: None,
             closing: Vec::new(),
             last_focus: None,
+            last_focused_session: None,
             pending_delete: None,
             vault,
             agent_view: Arc::default(),
@@ -591,6 +596,24 @@ impl App {
         }
     }
 
+    /// Status messages say what just happened, then get out of the way.
+    fn expire_info(&mut self, ctx: &egui::Context) {
+        const SHOWN_FOR: Duration = Duration::from_secs(8);
+        match (&self.info, &self.info_shown) {
+            (None, _) => self.info_shown = None,
+            (Some(now), Some((shown, since))) if now == shown => {
+                if since.elapsed() >= SHOWN_FOR {
+                    self.info = None;
+                    self.info_shown = None;
+                }
+            }
+            (Some(now), _) => {
+                self.info_shown = Some((now.clone(), Instant::now()));
+                ctx.request_repaint_after(SHOWN_FOR);
+            }
+        }
+    }
+
     /// Moving to a field selects what is in it, so typing replaces it.
     fn select_all_on_focus(&mut self, ctx: &egui::Context) {
         let focused = ctx.memory(|m| m.focused());
@@ -703,7 +726,11 @@ impl App {
                         .config
                         .identities
                         .iter()
-                        .find(|i| i.username == username && i.key_file.is_empty())
+                        // Never one with a saved password: "admin" on one device says nothing
+                        // about the password on another, and it would be sent there.
+                        .find(|i| {
+                            i.username == username && i.key_file.is_empty() && !i.has_password
+                        })
                         .map(|i| i.id);
                     let identity =
                         found.unwrap_or_else(|| self.config.add_identity(&username, &username));
@@ -764,25 +791,34 @@ impl App {
             .config
             .resolve(session)
             .and_then(|r| r.identity(&self.config).map(|i| i.id));
+        let saving_password = login.password.is_some();
+        // A password is saved for this session. It only goes on an existing login if
+        // nothing else uses that login, or it would be sent to those devices too.
         let reusable = current.filter(|id| {
-            self.config
+            let same_user = self
+                .config
                 .identity(*id)
-                .is_some_and(|i| i.username == username || username.is_empty())
+                .is_some_and(|i| i.username == username || username.is_empty());
+            same_user && (!saving_password || self.config.login_users(*id) <= 1)
         });
         let identity = reusable.unwrap_or_else(|| {
-            let label = if username.is_empty() {
-                "New login"
-            } else {
-                username.as_str()
+            let host = self
+                .config
+                .session(session)
+                .map(|s| s.target.host.clone())
+                .unwrap_or_default();
+            let label = match (username.is_empty(), host.is_empty()) {
+                (true, _) => "New login".to_string(),
+                (false, true) => username.clone(),
+                (false, false) => format!("{username}@{host}"),
             };
-            let id = self.config.add_identity(label, &username);
+            let id = self.config.add_identity(&label, &username);
             if let Some(o) = self.config.overrides_mut(session) {
                 o.identity = Some(id);
             }
             id
         });
         self.dirty = true;
-        self.selected_node = Some(session);
         if let Some(entry) = self.panes.get_mut(&pane) {
             entry.pane.spec.session_id = Some(session);
         }
@@ -946,6 +982,7 @@ impl App {
             return;
         }
         let spec = &entry.pane.spec;
+        // The file browser asks here, not in the terminal behind it.
         entry.sftp = Some(SftpPane::open(
             spec.settings.clone(),
             spec.password.clone(),
@@ -1172,7 +1209,16 @@ impl App {
         }
         self.repair_tabs();
 
+        // The sidebar shows where you are as you change tabs and panes.
+        let focused_session = self.snippet_scope();
+        if focused_session != self.last_focused_session {
+            self.last_focused_session = focused_session;
+            if focused_session.is_some() {
+                self.selected_node = focused_session;
+            }
+        }
         self.commit_logins();
+        self.expire_info(&ctx);
         self.select_all_on_focus(&ctx);
         self.sync_agent_server(&ctx);
         self.palette_overlay(&ctx, &chrome);
@@ -1477,8 +1523,11 @@ impl App {
                     if ui.button("↓").clicked() {
                         terminal_view::search_step(&entry.pane, &mut entry.search, true);
                     }
+                    // A text field gives up focus on Escape before this runs.
                     let escape = ui.input(|i| i.key_pressed(Key::Escape));
-                    if ui.button("×").clicked() || (escape && response.has_focus()) {
+                    if ui.button("×").clicked()
+                        || (escape && (response.has_focus() || response.lost_focus()))
+                    {
                         entry.search.open = false;
                         entry.search.current = None;
                     }
@@ -1721,6 +1770,27 @@ impl App {
             .filter_map(|e| e.pane.spec.session_id)
             .collect();
         let mut actions = Vec::new();
+        // Above the tree, which takes all the space below it.
+        if let Some(id) = self.pending_delete {
+            let (name, is_folder) = match self.config.find(id) {
+                Some(node) => (node.name().to_string(), matches!(node, Node::Folder(_))),
+                None => (String::new(), false),
+            };
+            let question = if is_folder {
+                format!("Delete {name} and everything in it?")
+            } else {
+                format!("Delete {name}?")
+            };
+            ui.label(RichText::new(question).color(chrome.danger));
+            ui.horizontal(|ui| {
+                if ui.button("Delete").clicked() {
+                    actions.push(TreeAction::Delete(id));
+                }
+                if ui.button("Keep").clicked() {
+                    self.pending_delete = None;
+                }
+            });
+        }
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -1745,27 +1815,6 @@ impl App {
                     actions.push(TreeAction::Move(*payload, None));
                 }
             });
-        if let Some(id) = self.pending_delete {
-            let (name, is_folder) = match self.config.find(id) {
-                Some(node) => (node.name().to_string(), matches!(node, Node::Folder(_))),
-                None => (String::new(), false),
-            };
-            ui.separator();
-            let question = if is_folder {
-                format!("Delete {name} and everything in it?")
-            } else {
-                format!("Delete {name}?")
-            };
-            ui.label(RichText::new(question).color(chrome.danger));
-            ui.horizontal(|ui| {
-                if ui.button("Delete").clicked() {
-                    actions.push(TreeAction::Delete(id));
-                }
-                if ui.button("Keep").clicked() {
-                    self.pending_delete = None;
-                }
-            });
-        }
         for action in actions {
             self.apply_tree_action(ui.ctx(), action);
         }
@@ -1906,7 +1955,15 @@ impl App {
                 if response.clicked() {
                     self.active_tab = index;
                 }
-                if ui.button("×").on_hover_text("Close this tab").clicked() {
+                if ui
+                    .add(
+                        egui::Button::new("×")
+                            .frame(false)
+                            .min_size(vec2(24.0, 24.0)),
+                    )
+                    .on_hover_text("Close this tab")
+                    .clicked()
+                {
                     close = Some(focused);
                 }
                 if response.clicked_by(egui::PointerButton::Middle) {
@@ -3023,9 +3080,10 @@ fn tree_rows(
         // Settings should not be something you have to know to right-click for.
         if response.hovered() || selected == Some(id) {
             let button =
-                Rect::from_center_size(rect.right_center() - vec2(16.0, 0.0), vec2(26.0, 24.0));
+                Rect::from_center_size(rect.right_center() - vec2(16.0, 0.0), vec2(34.0, 24.0));
             let mut child = ui.new_child(UiBuilder::new().max_rect(button));
-            if child.button("···").on_hover_text("Settings").clicked() {
+            let dots = egui::Button::new("···").wrap_mode(egui::TextWrapMode::Extend);
+            if child.add(dots).on_hover_text("Settings").clicked() {
                 actions.push(TreeAction::Inspect(id));
             }
         }
@@ -3301,18 +3359,29 @@ fn files_body(ui: &mut Ui, sftp: &mut SftpPane, chrome: &Chrome) {
         }
         Some(Question::Prompt(prompt)) => {
             sftp.answer_text.resize(prompt.fields.len(), String::new());
+            let mut submit = false;
             for (index, field) in prompt.fields.iter().enumerate() {
                 let label = ui.label(field.text.trim_end_matches([' ', ':'])).id;
-                ui.add(
-                    TextEdit::singleline(&mut sftp.answer_text[index])
-                        .password(!field.echo)
-                        .desired_width(f32::INFINITY),
-                )
-                .labelled_by(label);
+                let response = ui
+                    .add(
+                        TextEdit::singleline(&mut sftp.answer_text[index])
+                            .password(!field.echo)
+                            .id(egui::Id::unique(("linecon-files-prompt", index)))
+                            .desired_width(f32::INFINITY),
+                    )
+                    .labelled_by(label);
+                if response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    submit = true;
+                }
+                let idle = ui.ctx().memory(|m| m.focused().is_none());
+                if index == 0 && (idle || sftp.prompt_needs_focus) && !submit {
+                    response.request_focus();
+                    sftp.prompt_needs_focus = false;
+                }
             }
             let mut decided = None;
             ui.horizontal(|ui| {
-                if ui.button("Continue").clicked() {
+                if ui.button("Continue").clicked() || submit {
                     decided = Some(Some(sftp.answer_text.clone()));
                 }
                 if ui.button("Cancel").clicked() {
@@ -4134,6 +4203,12 @@ impl App {
 
     pub fn import_bundle_for_test(&mut self, text: &str) {
         self.import_bundle(text);
+    }
+
+    pub fn demo_session_login_password(&self, id: Id) -> Option<String> {
+        let resolved = self.config.resolve(id)?;
+        let identity = resolved.identity(&self.config)?;
+        self.vault_get(&identity.secret_key())
     }
 
     pub fn tab_count(&self) -> usize {

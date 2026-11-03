@@ -161,3 +161,10 @@ modern keys are still preferred over RSA, as before.
 
 PuTTY's placeholder for unofficial builds, `-Unidentified-Local-Build`, appears in device logs. The shim defines
 the version strings itself, as `linecon_<version>`, so `utils/version.c` is never linked.
+
+## 2026-11-03: A saved password belongs to one session unless shared on purpose
+
+Quick connections reused any login with the same username, which would have sent one device's saved password to
+another. Usernames like admin say nothing about passwords. Automatically saved sessions now only share a login
+holding no password, and remembering a password never changes a login that other sessions use. Sharing is still
+possible by choosing the same login in settings.

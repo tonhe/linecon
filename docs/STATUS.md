@@ -40,6 +40,8 @@
 - Checked with no flags against real IOS XE 17.18.2, Arista cEOS 4.36 and vJunos 26.2, in the CLI and through the
   window's code path. See `tests/lab/README.md`.
 
+- The real window is driven with real input against real devices by `tests/gui`. 16 flows pass on Linux.
+
 ## In progress
 - Fixes from real use on macOS.
 
@@ -50,7 +52,7 @@
 - Nothing.
 
 ## Known gaps
-- The window has run on macOS by hand. Linux and Windows have only been exercised headlessly.
+- The window is driven automatically on Linux and has been run on macOS by hand. Windows has only been run headlessly.
 - PuTTY reads .ppk key files only, so an OpenSSH key file will not load directly; keys need an agent.
 - PuTTY does not read ~/.ssh/config. Use the import command.
 - Windows and macOS do not run the Docker legacy test, because hosted runners lack a Linux

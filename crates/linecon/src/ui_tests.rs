@@ -1454,3 +1454,46 @@ fn real_devices_through_the_window_path() {
         );
     }
 }
+
+/// The same username on two devices must not mean the same password. Sending one
+/// device's password to another is the failure this guards against.
+#[test]
+fn a_saved_password_stays_with_its_own_session() {
+    use linecon_engine::settings::Settings;
+    let mut s = sample();
+    s.app.use_vault(Box::<MemoryStore>::default());
+    s.app.add_demo_tab("first", None, b"");
+    s.app
+        .demo_set_settings(Settings::ssh("10.0.0.1", 22, "admin"));
+    s.app.demo_remember(None, Some("first-password"));
+    let mut h = harness(s.app);
+    h.run_steps(2);
+    let first = h.state().focused_session().expect("first saved");
+
+    h.state_mut().add_demo_tab("second", None, b"");
+    h.state_mut()
+        .demo_set_settings(Settings::ssh("10.0.0.2", 22, "admin"));
+    h.state_mut().demo_remember(None, None);
+    h.run_steps(2);
+    let second = h.state().focused_session().expect("second saved");
+    assert_ne!(first, second);
+    assert_eq!(
+        h.state().demo_session_login_password(second),
+        None,
+        "the second device would have been sent the first device's password"
+    );
+
+    h.state_mut().add_demo_tab("third", None, b"");
+    h.state_mut()
+        .demo_set_settings(Settings::ssh("10.0.0.2", 22, "admin"));
+    h.state_mut().demo_remember(None, Some("second-password"));
+    h.run_steps(2);
+    assert_eq!(
+        h.state().demo_session_login_password(first).as_deref(),
+        Some("first-password")
+    );
+    assert_eq!(
+        h.state().demo_session_login_password(second).as_deref(),
+        Some("second-password")
+    );
+}

@@ -246,11 +246,12 @@ static SeatPromptResult shim_confirm_weak(
 static const SeatDialogPromptDescriptions *shim_prompt_descriptions(Seat *seat)
 {
     static const SeatDialogPromptDescriptions descs = {
-        .hk_accept_action = "accept the key",
-        .hk_connect_once_action = "connect once",
-        .hk_cancel_action = "cancel",
-        .hk_cancel_action_Participle = "Cancelling",
-        .weak_accept_action = "continue",
+        /* These finish PuTTY's sentences, so they name our actual buttons. */
+        .hk_accept_action = "choose Trust and remember",
+        .hk_connect_once_action = "choose Connect once",
+        .hk_cancel_action = "choose Cancel",
+        .hk_cancel_action_Participle = "Choosing Cancel",
+        .weak_accept_action = "allow it",
         .weak_cancel_action = "cancel",
     };
     return &descs;

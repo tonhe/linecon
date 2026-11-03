@@ -172,10 +172,12 @@ struct Input {
 
 /// Reads one answer from the keyboard while the session waits.
 fn ask(input: &Input, question: &str, echo: bool) -> Option<String> {
-    say(question);
+    // Ready before asking: an answer typed the moment the question appears must not
+    // go to the session instead.
     let (tx, rx) = mpsc::channel();
     *input.answers.lock().unwrap() = Some(tx);
     input.answering.store(true, Ordering::SeqCst);
+    say(question);
     let mut line: Vec<u8> = Vec::new();
     let answer = loop {
         match rx.recv() {

@@ -109,6 +109,7 @@ pub struct SftpPane {
     cancel: Arc<AtomicBool>,
     /// Text being typed in the panel, kept with the panel.
     pub answer_text: Vec<String>,
+    pub prompt_needs_focus: bool,
     pub new_folder: Option<String>,
     pub renaming: Option<(String, String)>,
     pub confirm_delete: Option<(String, bool)>,
@@ -202,6 +203,7 @@ impl SftpPane {
             answers,
             cancel,
             answer_text: Vec::new(),
+            prompt_needs_focus: true,
             new_folder: None,
             renaming: None,
             confirm_delete: None,
@@ -226,6 +228,7 @@ impl SftpPane {
             answers,
             cancel: Arc::new(AtomicBool::new(false)),
             answer_text: Vec::new(),
+            prompt_needs_focus: true,
             new_folder: None,
             renaming: None,
             confirm_delete: None,
@@ -314,6 +317,7 @@ impl SftpPane {
     pub fn answer_prompt(&mut self, answers: Option<Vec<String>>) {
         let _ = self.answers.send(Answer::Prompt(answers));
         self.answer_text.clear();
+        self.prompt_needs_focus = true;
     }
 }
 
