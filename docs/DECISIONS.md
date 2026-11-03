@@ -173,3 +173,10 @@ possible by choosing the same login in settings.
 
 The signing secrets reach only the packaging step of tag builds, in a throwaway keychain. Having some secrets but
 not others stops the release rather than silently shipping unsigned. With none set, builds stay ad-hoc.
+
+## 2026-11-03: Two renderers, and startup failures are shown
+
+Cloud desktops and many VMs have no GPU, and Windows offers them no usable OpenGL, so a window that needs OpenGL
+just fails to appear. Both OpenGL and wgpu are built in. Windows starts with wgpu, which has a software Direct3D
+adapter, and everything else starts with OpenGL. Each falls back to the other, at the cost of a larger binary.
+With no console on Windows, startup failures also go to a message box and to `linecon-error.log` beside the config.

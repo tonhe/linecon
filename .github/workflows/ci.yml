@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "ci/**"]
     tags: ["v*"]
   pull_request:
 
@@ -57,6 +57,18 @@ jobs:
       - name: Smoke test release binary
         shell: bash
         run: target/release/linecon --version
+      - name: Install a virtual display
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb libgl1-mesa-dri libegl1 libxkbcommon-x11-0
+      - name: Open the real window
+        shell: bash
+        run: packaging/smoke.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screen-${{ matrix.name }}
+          path: smoke-screen.png
+          if-no-files-found: ignore
       - name: Package
         shell: bash
         # Tags only: nothing else needs these, and pull requests must never see them.
