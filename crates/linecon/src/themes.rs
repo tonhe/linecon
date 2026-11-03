@@ -179,6 +179,7 @@ pub fn builtin() -> Vec<Theme> {
 
 impl Theme {
     /// Looks up a theme by name, falling back to the first built-in.
+    #[cfg(test)]
     pub fn named(name: &str, extra: &[Theme]) -> Theme {
         extra
             .iter()

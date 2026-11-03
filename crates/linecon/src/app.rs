@@ -942,14 +942,11 @@ impl App {
             CardAction::Reconnect => entry.pane.connect(),
             CardAction::Close => self.close_pane(id),
             CardAction::EnableLegacy => {
-                match session_id {
-                    Some(session) => {
-                        if let Some(o) = self.config.overrides_mut(session) {
-                            o.legacy_algorithms = Some(true);
-                        }
-                        self.dirty = true;
+                if let Some(session) = session_id {
+                    if let Some(o) = self.config.overrides_mut(session) {
+                        o.legacy_algorithms = Some(true);
                     }
-                    None => {}
+                    self.dirty = true;
                 }
                 let new_policy = linecon_engine::algorithms::AlgorithmPolicy {
                     legacy: true,

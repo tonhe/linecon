@@ -12,4 +12,4 @@
 - [X] T010 CI matrix on all five targets
 - [X] T011 CI green on all five targets
 - [ ] T012 Serial test over a pseudo-terminal
-- [ ] T013 Tagged release publishes five executables
+- [X] T013 Tagged release publishes five executables
