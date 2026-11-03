@@ -122,3 +122,10 @@ connection rather than going direct.
 
 Floating stable meant CI could run a newer clippy than a developer's machine and fail on code that
 looked clean. `rust-toolchain.toml` and the workflow name the same version, bumped deliberately.
+
+## 2026-11-03: SFTP file requests are encoded in Rust, over PuTTY's SSH
+
+PuTTY's sftp.c waits for replies by pumping the event loop inside its receive call, so running it on the
+shared engine thread would freeze every other session. A helper process would avoid that at the cost of a
+second copy of the engine per transfer. Instead PuTTY opens the `sftp` subsystem and carries everything
+SSH, and a small codec handles SFTP v3 requests. That is a file protocol above SSH, so constraint 1 holds.

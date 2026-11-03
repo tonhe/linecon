@@ -362,6 +362,9 @@ lc_session *lc_session_open(const lc_setting *settings, size_t n, void *user,
     sfree(jump);
     Conf *conf = conf_new();
     load_open_settings(sr, conf);
+    /* PuTTY does not save this option, so its settings loader cannot set it. */
+    if (read_setting_i(sr, "Linecon.Subsystem", 0))
+        conf_set_bool(conf, CONF_ssh_subsys, true);
     lc_settings_free(sr);
 
     *error_out = NULL;

@@ -9,6 +9,7 @@ mod engine;
 pub mod hostkeys;
 pub mod negotiation;
 pub mod settings;
+pub mod sftp;
 
 pub use engine::{
     putty_version, set_hostkey_store, Event, HostKeyPrompt, HostKeyVerdict, OpenError, Prompt,

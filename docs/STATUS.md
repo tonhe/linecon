@@ -25,7 +25,7 @@
 - Serial port discovery and console presets. Algorithm order chosen by the user is what PuTTY negotiates.
 
 ## In progress
-- Next: SFTP pane.
+- SFTP pane: the engine half is done and tested; the browser UI is next (`specs/008-sftp`).
 
 ## Next
 - SFTP pane, MCP server, snippet sharing.
