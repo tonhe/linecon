@@ -43,6 +43,13 @@ Downloads are on the [releases page](https://github.com/tonhe/linecon/releases).
 - **Windows**: run `linecon-windows-x64.exe`. SmartScreen may warn, since it is unsigned. See the
   [code signing policy](docs/code-signing-policy.md). A console window may flash when starting it from Explorer.
 
+### Code signing
+
+linecon0 is applying to use the [SignPath Foundation](https://signpath.org) for free code signing of its Windows
+releases. Until that is approved, Windows releases are unsigned. See the
+[code signing policy](docs/code-signing-policy.md), which also covers privacy: the program has no telemetry and
+connects only where you tell it to.
+
 ## Use
 
 Run `linecon` with no arguments for the window, or with arguments for a command-line
