@@ -142,3 +142,9 @@ applies queued input, so withdrawing a grant wins over anything in flight.
 Connections from the quick connect box go in a "Quick sessions" folder, but only after they connect, so
 typos do not pile up. Reconnecting reuses the entry and moves it to the top, and only the newest 25 are kept
 there. Dragging one to another folder keeps it for good. Passwords are saved only by asking.
+
+## 2026-11-03: Session bundles are versioned TOML, without passwords
+
+No agreed standard exists for terminal client sessions, so linecon0 defines a small documented format using
+the same types as its config file. Export files get shared, so passwords are never included, not even encrypted.
+A folder export folds in what it inherited, and an import never touches existing entries.

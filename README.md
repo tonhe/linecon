@@ -63,6 +63,12 @@ keeps config, known hosts and logs in a `linecon-data` folder beside it.
 
 Drop an iTerm2 `.itermcolors` or Windows Terminal `.json` scheme on the window to import it.
 
+## Moving sessions
+
+Export everything from the command palette, or one folder by right-clicking it, to a readable file described in
+[docs/session-format.md](docs/session-format.md). Drop that file on another window to import it. Folders and
+inherited settings come along, usernames and key paths only if you ask, and passwords never.
+
 ## Agent access
 
 linecon0 can act as an [MCP](https://modelcontextprotocol.io) server so an AI agent can work in sessions you

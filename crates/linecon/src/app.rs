@@ -140,6 +140,9 @@ enum Command {
     ToggleFiles,
     ToggleAgentServer,
     SessionSettings,
+    ExportSessions {
+        with_logins: bool,
+    },
     ExportSnippets,
     SetAgentAccess(Access),
     ImportSshConfig,
@@ -556,6 +559,7 @@ impl App {
                 self.inspector = Some(scope.map_or(InspectTarget::Root, InspectTarget::Node));
             }
             Command::ExportSnippets => self.export_snippets(),
+            Command::ExportSessions { with_logins } => self.export_sessions(None, with_logins),
             Command::ToggleAgentServer => {
                 self.config.mcp_enabled = !self.config.mcp_enabled;
                 self.dirty = true;
@@ -862,6 +866,34 @@ impl App {
                     entry.pane.send(&data);
                 }
             }
+        }
+    }
+
+    fn export_sessions(&mut self, root: Option<Id>, with_logins: bool) {
+        let path = crate::sftp_pane::unused_path(&downloads_dir(), "linecon-sessions.toml");
+        let written = linecon_config::import::export_bundle(&self.config, root, with_logins)
+            .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
+        match written {
+            Ok(()) => {
+                self.error = None;
+                self.info = Some(format!("Exported to {}", path.display()));
+            }
+            Err(e) => self.error = Some(format!("Could not export: {e}")),
+        }
+    }
+
+    fn import_bundle(&mut self, text: &str) {
+        match linecon_config::import::import_bundle(&mut self.config, text) {
+            Ok(result) => {
+                self.selected_node = Some(result.folder);
+                self.dirty = true;
+                self.error = None;
+                self.info = Some(format!(
+                    "Imported {} sessions and {} logins. Passwords do not travel.",
+                    result.sessions, result.new_logins
+                ));
+            }
+            Err(e) => self.error = Some(format!("Could not import: {e}")),
         }
     }
 
@@ -1181,6 +1213,16 @@ impl App {
                     }
                     Err(e) => self.error = Some(format!("{}: {e}", path.display())),
                 }
+                continue;
+            }
+            let text = std::fs::read(&path)
+                .ok()
+                .map(|d| linecon_config::import::decode_text(&d));
+            if let Some(text) = text
+                .as_deref()
+                .filter(|t| linecon_config::import::is_bundle(t))
+            {
+                self.import_bundle(text);
                 continue;
             }
             let snippets = std::fs::read(&path).ok().and_then(|data| {
@@ -1800,6 +1842,7 @@ impl App {
                     self.dirty = true;
                 }
             }
+            TreeAction::Export(id, with_logins) => self.export_sessions(Some(id), with_logins),
             TreeAction::AskDelete(id) => self.pending_delete = Some(id),
             TreeAction::Delete(id) => {
                 self.pending_delete = None;
@@ -2003,6 +2046,16 @@ impl App {
                 Command::ImportRegistry { kitty: true },
             );
         }
+        add(
+            "Export all sessions",
+            "folders and settings",
+            Command::ExportSessions { with_logins: false },
+        );
+        add(
+            "Export all sessions with logins",
+            "usernames and key paths, never passwords",
+            Command::ExportSessions { with_logins: true },
+        );
         add(
             "Export snippets to a file",
             "share them by dropping it on a window",
@@ -2862,6 +2915,7 @@ enum TreeAction {
     NewFolder(Option<Id>),
     AskDelete(Id),
     Delete(Id),
+    Export(Id, bool),
     Move(Id, Option<Id>),
 }
 
@@ -3022,6 +3076,14 @@ fn tree_rows(
                 }
                 if ui.button("New folder here").clicked() {
                     actions.push(TreeAction::NewFolder(Some(id)));
+                    ui.close();
+                }
+                if ui.button("Export this folder").clicked() {
+                    actions.push(TreeAction::Export(id, false));
+                    ui.close();
+                }
+                if ui.button("Export this folder with logins").clicked() {
+                    actions.push(TreeAction::Export(id, true));
                     ui.close();
                 }
             }
@@ -4068,6 +4130,10 @@ impl App {
         let tab = &mut self.tabs[self.active_tab];
         tab.layout = Layout::Leaf(9999);
         tab.focused = 9999;
+    }
+
+    pub fn import_bundle_for_test(&mut self, text: &str) {
+        self.import_bundle(text);
     }
 
     pub fn tab_count(&self) -> usize {

@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::model::{Config, Id, Protocol, Target};
+use crate::model::{Config, Id, Node, Overrides, Protocol, Snippet, Target};
 
 /// One session found in another tool's data.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -592,6 +592,219 @@ pub fn import_path(path: &Path) -> Result<Option<ImportResult>, String> {
     Ok(None)
 }
 
+// ------------------------------------------------------------- Session bundles
+
+const BUNDLE_FORMAT_PREFIX: &str = "linecon-sessions-";
+const BUNDLE_FORMAT: &str = "linecon-sessions-1";
+
+/// A login as it appears in a bundle. There is deliberately no password field.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+#[serde(default)]
+struct BundleIdentity {
+    id: Id,
+    name: String,
+    username: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    key_file: String,
+    use_agent: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+#[serde(default)]
+struct Bundle {
+    format: String,
+    settings: Overrides,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    snippets: Vec<Snippet>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    identities: Vec<BundleIdentity>,
+    nodes: Vec<Node>,
+}
+
+/// Layers settings: anything `inner` leaves unset comes from `outer`.
+fn layered(outer: &Overrides, inner: &Overrides) -> Result<Overrides, String> {
+    let to_table = |o: &Overrides| -> Result<toml::Table, String> {
+        toml::Table::try_from(o).map_err(|e| e.to_string())
+    };
+    let mut merged = to_table(outer)?;
+    merged.extend(to_table(inner)?);
+    merged
+        .try_into()
+        .map_err(|e: toml::de::Error| e.to_string())
+}
+
+fn walk_nodes(nodes: &mut [Node], visit: &mut dyn FnMut(&mut Node)) {
+    for node in nodes {
+        visit(node);
+        if let Node::Folder(folder) = node {
+            walk_nodes(&mut folder.children, visit);
+        }
+    }
+}
+
+fn node_settings(node: &mut Node) -> &mut Overrides {
+    match node {
+        Node::Folder(f) => &mut f.settings,
+        Node::Session(s) => &mut s.settings,
+    }
+}
+
+/// Exports the whole tree, or one folder. A folder keeps what it inherited from
+/// outside the export, so its sessions behave the same on the other side.
+pub fn export_bundle(
+    config: &Config,
+    root: Option<Id>,
+    with_logins: bool,
+) -> Result<String, String> {
+    let mut settings = config.settings.clone();
+    let mut snippets = config.snippets.clone();
+    let mut nodes = match root {
+        None => config.nodes.clone(),
+        Some(id) => {
+            for folder in config.ancestors(id).ok_or("that folder no longer exists")? {
+                settings = layered(&settings, &folder.settings)?;
+                snippets.extend(folder.snippets.iter().cloned());
+            }
+            vec![config
+                .find(id)
+                .ok_or("that folder no longer exists")?
+                .clone()]
+        }
+    };
+    let mut used = Vec::new();
+    if let Some(id) = settings.identity {
+        used.push(id);
+    }
+    settings.log_dir = None;
+    if !with_logins {
+        settings.identity = None;
+    }
+    walk_nodes(&mut nodes, &mut |node| {
+        let o = node_settings(node);
+        o.log_dir = None;
+        if let Some(id) = o.identity {
+            used.push(id);
+        }
+        if !with_logins {
+            o.identity = None;
+        }
+    });
+    let identities = if with_logins {
+        config
+            .identities
+            .iter()
+            .filter(|i| used.contains(&i.id))
+            .map(|i| BundleIdentity {
+                id: i.id,
+                name: i.name.clone(),
+                username: i.username.clone(),
+                key_file: i.key_file.clone(),
+                use_agent: i.use_agent,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let bundle = Bundle {
+        format: BUNDLE_FORMAT.to_string(),
+        settings,
+        snippets,
+        identities,
+        nodes,
+    };
+    toml::to_string_pretty(&bundle).map_err(|e| e.to_string())
+}
+
+/// True if this text claims to be a bundle, of any version.
+pub fn is_bundle(text: &str) -> bool {
+    text.lines()
+        .take(5)
+        .any(|l| l.starts_with("format") && l.contains(BUNDLE_FORMAT_PREFIX))
+}
+
+/// How many sessions a bundle added.
+#[derive(Debug, PartialEq, Eq)]
+pub struct BundleImport {
+    pub folder: Id,
+    pub sessions: usize,
+    pub new_logins: usize,
+}
+
+/// Adds a bundle under a new folder, with fresh ids. Nothing existing changes, and
+/// logins matching an existing username and key file are shared.
+pub fn import_bundle(config: &mut Config, text: &str) -> Result<BundleImport, String> {
+    if !is_bundle(text) {
+        return Err("this is not a session bundle".to_string());
+    }
+    let mut bundle: Bundle =
+        toml::from_str(text).map_err(|e| format!("this session bundle is damaged: {e}"))?;
+    if bundle.format != BUNDLE_FORMAT {
+        return Err(format!(
+            "this bundle is format {}, and this version reads {BUNDLE_FORMAT}. Update linecon0.",
+            bundle.format
+        ));
+    }
+    let mut logins = HashMap::new();
+    let mut new_logins = 0;
+    for identity in &bundle.identities {
+        let existing = config
+            .identities
+            .iter()
+            .find(|i| i.username == identity.username && i.key_file == identity.key_file)
+            .map(|i| i.id);
+        let id = existing.unwrap_or_else(|| {
+            new_logins += 1;
+            let id = config.add_identity(&identity.name, &identity.username);
+            let added = config.identity_mut(id).expect("just added");
+            added.key_file = identity.key_file.clone();
+            added.use_agent = identity.use_agent;
+            id
+        });
+        logins.insert(identity.id, id);
+    }
+    // A login the file does not include cannot be guessed at, so it is dropped.
+    let remap = |o: &mut Overrides| {
+        if let Some(old) = o.identity {
+            o.identity = if old == 0 {
+                Some(0)
+            } else {
+                logins.get(&old).copied()
+            };
+        }
+    };
+    remap(&mut bundle.settings);
+    let mut sessions = 0;
+    let mut fresh = Vec::new();
+    walk_nodes(&mut bundle.nodes, &mut |node| {
+        remap(node_settings(node));
+        if matches!(node, Node::Session(_)) {
+            sessions += 1;
+        }
+        fresh.push(());
+    });
+    let mut ids: Vec<Id> = fresh.iter().map(|()| config.fresh_id()).collect();
+    walk_nodes(&mut bundle.nodes, &mut |node| {
+        let id = ids.pop().expect("one id per node");
+        match node {
+            Node::Folder(f) => f.id = id,
+            Node::Session(s) => s.id = id,
+        }
+    });
+    let folder = config
+        .add_folder(None, "Imported sessions")
+        .ok_or("could not add a folder")?;
+    if let Some(Node::Folder(target)) = config.find_mut(folder) {
+        target.settings = bundle.settings;
+        target.snippets = bundle.snippets;
+        target.children = bundle.nodes;
+    }
+    Ok(BundleImport {
+        folder,
+        sessions,
+        new_logins,
+    })
+}
+
 // ------------------------------------------------------------------- Snippets
 
 /// Marks a file as shared snippets, so it can be recognised when dropped.
@@ -630,6 +843,189 @@ pub fn merge_snippets(
         }
     }
     added
+}
+
+#[cfg(test)]
+mod bundle_tests {
+    use super::*;
+
+    fn target(host: &str) -> Target {
+        Target {
+            host: host.into(),
+            port: Some(2222),
+            ..Default::default()
+        }
+    }
+
+    /// A tree with inheritance at each level, a login with a saved password, and a
+    /// sibling folder that must stay out of a folder export.
+    fn sample() -> (Config, Id, Id) {
+        let mut c = Config::default();
+        c.settings.theme = Some("Nord".into());
+        c.settings.log_dir = Some("/home/me/logs".into());
+        c.snippets.push(Snippet {
+            name: "everywhere".into(),
+            text: "show ver".into(),
+        });
+        let who = c.add_identity("ops", "netops");
+        {
+            let i = c.identity_mut(who).unwrap();
+            i.key_file = "/keys/a.ppk".into();
+            i.has_password = true;
+        }
+        let site = c.add_folder(None, "Site").unwrap();
+        c.overrides_mut(site).unwrap().legacy_algorithms = Some(true);
+        c.overrides_mut(site).unwrap().identity = Some(who);
+        let core = c.add_folder(Some(site), "Core").unwrap();
+        c.overrides_mut(core).unwrap().font_size = Some(18);
+        let sw = c
+            .add_session(Some(core), "sw1", target("10.0.0.1"))
+            .unwrap();
+        c.overrides_mut(sw).unwrap().log_dir = Some("/secret/place".into());
+        let other = c.add_folder(None, "Other").unwrap();
+        c.add_session(Some(other), "elsewhere", target("10.9.9.9"))
+            .unwrap();
+        (c, core, sw)
+    }
+
+    fn find(config: &Config, name: &str) -> Option<Id> {
+        fn walk(nodes: &[Node], name: &str) -> Option<Id> {
+            nodes.iter().find_map(|n| match n {
+                Node::Session(s) if s.name == name => Some(s.id),
+                Node::Folder(f) => walk(&f.children, name),
+                _ => None,
+            })
+        }
+        walk(&config.nodes, name)
+    }
+
+    #[test]
+    fn whole_tree_round_trips_with_structure_and_logins() {
+        let (source, ..) = sample();
+        let text = export_bundle(&source, None, true).unwrap();
+        let mut dest = Config::default();
+        let result = import_bundle(&mut dest, &text).unwrap();
+        assert_eq!((result.sessions, result.new_logins), (2, 1));
+        let sw = find(&dest, "sw1").unwrap();
+        let path: Vec<_> = dest
+            .ancestors(sw)
+            .unwrap()
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
+        assert_eq!(path, ["Imported sessions", "Site", "Core"]);
+        let r = dest.resolve(sw).unwrap();
+        assert_eq!(
+            r.theme.value, "Nord",
+            "the exporter's global settings should carry over"
+        );
+        assert!(r.legacy_algorithms.value);
+        assert_eq!(r.font_size.value, 18);
+        let login = r.identity(&dest).unwrap();
+        assert_eq!(
+            (login.username.as_str(), login.key_file.as_str()),
+            ("netops", "/keys/a.ppk")
+        );
+        assert_eq!(dest.session(sw).unwrap().target.port, Some(2222));
+        assert_eq!(dest.snippets_for(Some(sw))[0].name, "everywhere");
+        // The destination's own global settings are untouched.
+        assert_eq!(dest.settings.theme, None);
+    }
+
+    #[test]
+    fn passwords_and_local_paths_never_leave() {
+        let (source, ..) = sample();
+        for with_logins in [true, false] {
+            let text = export_bundle(&source, None, with_logins).unwrap();
+            assert!(!text.contains("has_password"), "{text}");
+            assert!(!text.contains("password"), "{text}");
+            assert!(
+                !text.contains("/secret/place") && !text.contains("/home/me/logs"),
+                "{text}"
+            );
+        }
+        let mut dest = Config::default();
+        import_bundle(&mut dest, &export_bundle(&source, None, true).unwrap()).unwrap();
+        assert!(
+            !dest.identities[0].has_password,
+            "claimed a password that did not travel"
+        );
+    }
+
+    #[test]
+    fn logins_are_optional() {
+        let (source, ..) = sample();
+        let text = export_bundle(&source, None, false).unwrap();
+        assert!(
+            !text.contains("netops") && !text.contains("a.ppk"),
+            "{text}"
+        );
+        assert!(!text.contains("identity"), "{text}");
+        let mut dest = Config::default();
+        import_bundle(&mut dest, &text).unwrap();
+        assert!(dest.identities.is_empty());
+        let sw = find(&dest, "sw1").unwrap();
+        assert!(dest.resolve(sw).unwrap().identity(&dest).is_none());
+    }
+
+    #[test]
+    fn a_folder_export_keeps_what_it_inherited_and_nothing_else() {
+        let (source, core, _) = sample();
+        let text = export_bundle(&source, Some(core), true).unwrap();
+        assert!(!text.contains("elsewhere"), "{text}");
+        let mut dest = Config::default();
+        import_bundle(&mut dest, &text).unwrap();
+        let sw = find(&dest, "sw1").unwrap();
+        let r = dest.resolve(sw).unwrap();
+        // From above the exported folder: its parent, and the global settings.
+        assert!(r.legacy_algorithms.value);
+        assert_eq!(r.theme.value, "Nord");
+        assert_eq!(r.identity(&dest).unwrap().username, "netops");
+        assert_eq!(r.font_size.value, 18);
+    }
+
+    #[test]
+    fn importing_changes_nothing_existing_and_shares_matching_logins() {
+        let (source, ..) = sample();
+        let text = export_bundle(&source, None, true).unwrap();
+        let mut dest = source.clone();
+        let (before_sw, before_ids) = (find(&dest, "sw1").unwrap(), dest.identities.len());
+        let before = dest.nodes.clone();
+        let result = import_bundle(&mut dest, &text).unwrap();
+        assert_eq!(result.new_logins, 0);
+        assert_eq!(dest.identities.len(), before_ids);
+        assert_eq!(&dest.nodes[..before.len()], &before[..]);
+        assert_eq!(
+            find(&dest, "sw1"),
+            Some(before_sw),
+            "the first match is still the original"
+        );
+        // Every id in the tree stays unique, so selecting or moving one is unambiguous.
+        let mut ids = Vec::new();
+        walk_nodes(&mut dest.nodes, &mut |n| ids.push(n.id()));
+        let count = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), count);
+        // A fresh id never collides with imported ones.
+        assert!(!ids.contains(&dest.add_folder(None, "later").unwrap()));
+    }
+
+    #[test]
+    fn bad_files_are_refused_and_change_nothing() {
+        let mut c = Config::default();
+        let future = "format = \"linecon-sessions-99\"\nnodes = []\n";
+        assert!(is_bundle(future));
+        assert!(import_bundle(&mut c, future)
+            .unwrap_err()
+            .contains("Update"));
+        assert!(import_bundle(&mut c, "Host x\n").is_err());
+        let damaged = "format = \"linecon-sessions-1\"\nnodes = 3\n";
+        assert!(import_bundle(&mut c, damaged)
+            .unwrap_err()
+            .contains("damaged"));
+        assert_eq!(c, Config::default());
+    }
 }
 
 #[cfg(test)]

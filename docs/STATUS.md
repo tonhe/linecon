@@ -33,6 +33,8 @@
 - First real run on macOS: the window opens, and key login worked, probably through the agent. Fixes from that are in
   `specs/011-first-real-use`.
 
+- Session export and import in a documented format, with folders and optional logins.
+
 ## In progress
 - Fixes from real use on macOS.
 

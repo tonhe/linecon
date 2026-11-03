@@ -1361,3 +1361,22 @@ fn the_sidebar_can_be_hidden_and_brought_back() {
         "did not come back"
     );
 }
+
+#[test]
+fn a_session_bundle_moves_between_installs_through_the_app() {
+    let s = sample();
+    let text = linecon_config::import::export_bundle(&s.app.config, None, true).unwrap();
+    let mut other = App::new(location());
+    other.import_bundle_for_test(&text);
+    let mut h = harness(other);
+    h.run_steps(3);
+    assert!(h.query_by_label("Imported sessions").is_some());
+    assert!(
+        h.query_by_label("core-sw1").is_some(),
+        "the tree did not arrive"
+    );
+    assert!(
+        h.query_by_label("Core switches").is_some(),
+        "folders did not arrive"
+    );
+}

@@ -225,7 +225,7 @@ impl Default for Config {
 }
 
 impl Config {
-    fn fresh_id(&mut self) -> Id {
+    pub(crate) fn fresh_id(&mut self) -> Id {
         let id = self.next_id;
         self.next_id += 1;
         id
