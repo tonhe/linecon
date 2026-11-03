@@ -117,3 +117,8 @@ uses defaults, which would drop legacy algorithms on the hop. The shim's storage
 lookup with settings the application supplies, prefixed `Jump.`. PuTTY stays unpatched. `ProxyLocalhost`
 is always set, so a target that looks local cannot skip the jump. A mistyped jump host fails the
 connection rather than going direct.
+
+## 2026-11-03: The Rust toolchain is pinned
+
+Floating stable meant CI could run a newer clippy than a developer's machine and fail on code that
+looked clean. `rust-toolchain.toml` and the workflow name the same version, bumped deliberately.

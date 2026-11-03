@@ -396,10 +396,8 @@ pub fn read_windows_registry(kitty: bool) -> Result<ImportResult, String> {
 /// Regedit writes UTF-16 with a byte order mark; everything else here is UTF-8.
 pub fn decode_text(data: &[u8]) -> String {
     if let Some(rest) = data.strip_prefix(&[0xff, 0xfe]) {
-        let units: Vec<u16> = rest
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
+        let (pairs, _) = rest.as_chunks::<2>();
+        let units: Vec<u16> = pairs.iter().map(|c| u16::from_le_bytes(*c)).collect();
         String::from_utf16_lossy(&units)
     } else {
         String::from_utf8_lossy(data.strip_prefix(b"\xef\xbb\xbf").unwrap_or(data)).into_owned()

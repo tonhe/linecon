@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/tonhe/linecon"
-rust-version = "1.85"
+rust-version = "1.99"
 
 [profile.release]
 lto = "thin"

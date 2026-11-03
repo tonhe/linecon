@@ -1,0 +1,4 @@
+# Local and CI must agree, or a newer clippy fails CI on code that looked clean.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]

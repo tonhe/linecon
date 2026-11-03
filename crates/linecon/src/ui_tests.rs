@@ -34,7 +34,11 @@ const TOP: &[u8] = b"\x1b[7m  PID USER      PR  NI    VIRT    RES  %CPU %MEM COM
 \r\n\x1b[38;2;255;150;50mtrue color\x1b[0m \x1b[38;5;45m256 color\x1b[0m \x1b[4munderline\x1b[0m\r\n";
 
 fn location() -> ConfigLocation {
-    let dir = std::env::temp_dir().join(format!("linecon-ui-{}", std::process::id()));
+    // One folder per app: tests run in parallel, and a shared config file would
+    // let one test load the tree another just saved.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("linecon-ui-{}-{n}", std::process::id()));
     ConfigLocation {
         mode: Mode::Portable,
         dir,
