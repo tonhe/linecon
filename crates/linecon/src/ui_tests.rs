@@ -121,6 +121,7 @@ fn default_view_is_terminal_and_sidebar_only() {
     let mut h = harness(s.app);
     h.run_steps(3);
     // The tree is there, and nothing else asks for attention.
+    assert!(h.query_by_label("core-sw2").is_some());
     assert!(h.query_by_label("Global settings").is_none());
     screenshot(&mut h, "main");
 }
@@ -440,4 +441,62 @@ fn saved_password_logs_in_without_asking() {
         assert_ne!(pane.status(), Status::Live);
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[test]
+fn snippets_are_offered_only_within_their_scope() {
+    let mut s = sample();
+    let folder = s.app.config.ancestors(s.core_sw).unwrap()[1].id;
+    if let Some(linecon_config::Node::Folder(f)) = s.app.config.find_mut(folder) {
+        f.snippets.push(linecon_config::Snippet {
+            name: "core health".into(),
+            text: "show env\n".into(),
+        });
+    }
+    s.app.add_demo_tab("elsewhere", None, b"");
+    s.app.open_palette("run:");
+    let mut h = harness(s.app);
+    h.run_steps(2);
+    assert!(
+        h.query_by_label("Run: core health").is_none(),
+        "offered outside its folder"
+    );
+    let id = s_core(&h);
+    h.state_mut().add_demo_tab("core-sw1", Some(id), b"");
+    h.state_mut().open_palette("run:");
+    h.run_steps(2);
+    assert!(
+        h.query_by_label("Run: core health").is_some(),
+        "not offered inside its folder"
+    );
+    screenshot(&mut h, "snippet");
+}
+
+fn s_core(h: &Harness<'_, App>) -> Id {
+    fn walk(nodes: &[linecon_config::Node]) -> Option<Id> {
+        nodes.iter().find_map(|n| match n {
+            linecon_config::Node::Session(s) if s.name == "core-sw1" => Some(s.id),
+            linecon_config::Node::Folder(f) => walk(&f.children),
+            _ => None,
+        })
+    }
+    walk(&h.state().config.nodes).unwrap()
+}
+
+#[test]
+fn dropping_session_files_imports_them() {
+    let dir = std::env::temp_dir().join(format!("linecon-drop-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("config");
+    std::fs::write(&file, "Host sw7\n  HostName 10.7.7.7\n  User ops\n").unwrap();
+    let mut app = App::new(location());
+    app.import_for_test(&file);
+    let imported = app
+        .config
+        .nodes
+        .iter()
+        .find(|n| n.name() == "Imported from SSH config");
+    assert!(imported.is_some());
+    assert_eq!(app.config.identities[0].username, "ops");
+    std::fs::remove_dir_all(dir).unwrap();
 }

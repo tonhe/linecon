@@ -17,11 +17,14 @@
 - Jump hosts through PuTTY's SSH proxy, with each hop's legacy settings, port forwards (local, remote,
   dynamic) and ssh-agent login, tested against the Docker server. Changed host keys block.
 
+- Imports from ~/.ssh/config, PuTTY and KiTTY (registry, .reg, portable files) and SecureCRT, by palette
+  or by dropping files on the window. Stored passwords are not imported. Snippets with folder scope.
+
 ## In progress
 - Nothing mid-task; next feature is being specified.
 
 ## Next
-- Snippets, session imports, SFTP, MCP.
+- SFTP pane, MCP server, snippet sharing.
 
 ## Blocked
 - Nothing.
@@ -35,5 +38,6 @@
 - OS secret stores are only automatically tested on Windows; Keychain and secret-service need a
   logged-in desktop session.
 - Pageant and the 1Password agent are untested. A remote forward has no automated test.
+- Importers are tested against samples written from the formats, not exports from real installs.
 - Saved passwords are not used through a jump host, because the prompt may be the jump host's.
 - macOS builds are not notarized, so Gatekeeper blocks them until allowed by hand.

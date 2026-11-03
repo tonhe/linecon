@@ -11,6 +11,7 @@ use egui::{
     Margin, Modifiers, Panel, Rect, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui, UiBuilder,
 };
 use linecon_config::secrets::Vault;
+use linecon_config::Snippet;
 use linecon_config::{
     Appearance, Config, ConfigLocation, FlowControl, Id, Inherited, Node, Overrides, Parity,
     Protocol, Resolved, Source, Target,
@@ -122,6 +123,12 @@ enum Command {
     GlobalSettings,
     SetTheme(String),
     SetAppearance(Appearance),
+    RunSnippet(String),
+    ImportSshConfig,
+    #[cfg(windows)]
+    ImportRegistry {
+        kitty: bool,
+    },
     Open(Id),
 }
 
@@ -140,7 +147,8 @@ pub struct App {
     unlock: Option<Unlock>,
     /// Passwords being typed into identity forms, by identity.
     password_drafts: HashMap<Id, Zeroizing<String>>,
-    notice: Option<String>,
+    error: Option<String>,
+    info: Option<String>,
     tabs: Vec<Tab>,
     active_tab: usize,
     panes: HashMap<PaneId, PaneEntry>,
@@ -229,7 +237,8 @@ impl App {
             config,
             location,
             config_error,
-            notice: None,
+            error: None,
+            info: None,
             tabs: Vec::new(),
             active_tab: 0,
             panes: HashMap::new(),
@@ -472,7 +481,62 @@ impl App {
                 self.dirty = true;
             }
             Command::Open(id) => self.open_saved(id),
+            Command::RunSnippet(text) => self.run_snippet(&text),
+            Command::ImportSshConfig => {
+                let path =
+                    directories::BaseDirs::new().map(|d| d.home_dir().join(".ssh").join("config"));
+                match path.map(|p| std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))) {
+                    Some(Ok(data)) => {
+                        let text = linecon_config::import::decode_text(&data);
+                        self.finish_import(linecon_config::import::parse_ssh_config(&text));
+                    }
+                    Some(Err(e)) => self.error = Some(e),
+                    None => self.error = Some("no home directory".to_string()),
+                }
+            }
+            #[cfg(windows)]
+            Command::ImportRegistry { kitty } => {
+                match linecon_config::import::read_windows_registry(kitty) {
+                    Ok(result) => self.finish_import(result),
+                    Err(e) => self.error = Some(e),
+                }
+            }
         }
+    }
+
+    fn run_snippet(&mut self, text: &str) {
+        let Some(focused) = self.focused_pane() else {
+            return;
+        };
+        let mut bytes = text
+            .trim_end_matches(['\r', '\n'])
+            .replace("\r\n", "\r")
+            .replace('\n', "\r");
+        bytes.push('\r');
+        let broadcasting = self.panes.get(&focused).is_some_and(|e| e.broadcast);
+        for (id, entry) in &self.panes {
+            if *id == focused || (broadcasting && entry.broadcast) {
+                entry.pane.send(bytes.as_bytes());
+            }
+        }
+    }
+
+    fn finish_import(&mut self, result: linecon_config::import::ImportResult) {
+        if result.sessions.is_empty() {
+            self.error = Some(format!("Nothing to import from {}", result.source));
+            return;
+        }
+        let count = result.sessions.len();
+        if let Some(folder) = linecon_config::import::apply(&mut self.config, &result) {
+            self.selected_node = Some(folder);
+            self.dirty = true;
+        }
+        let skipped = match result.skipped {
+            0 => String::new(),
+            n => format!(", {n} skipped"),
+        };
+        self.info = Some(format!("Imported {count} from {}{skipped}", result.source));
+        self.error = None;
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -625,16 +689,34 @@ impl App {
         self.save_if_needed();
     }
 
-    /// Dropping a scheme file on the window imports it and makes it current.
+    /// Dropping a color scheme makes it current. Dropping session files or a
+    /// folder of them imports the sessions.
     fn import_dropped_themes(&mut self, ctx: &egui::Context) {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for path in dropped.into_iter().map(|f| f.path().to_path_buf()) {
-            match self.import_theme(&path) {
-                Ok(name) => {
-                    self.config.settings.theme = Some(name);
-                    self.dirty = true;
+            let extension = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase);
+            if matches!(extension.as_deref(), Some("itermcolors" | "json")) {
+                match self.import_theme(&path) {
+                    Ok(name) => {
+                        self.config.settings.theme = Some(name);
+                        self.dirty = true;
+                    }
+                    Err(e) => self.error = Some(format!("{}: {e}", path.display())),
                 }
-                Err(e) => self.notice = Some(format!("{}: {e}", path.display())),
+                continue;
+            }
+            match linecon_config::import::import_path(&path) {
+                Ok(Some(result)) => self.finish_import(result),
+                Ok(None) => {
+                    self.error = Some(format!(
+                        "{}: not a file linecon0 recognises",
+                        path.display()
+                    ))
+                }
+                Err(e) => self.error = Some(format!("{}: {e}", path.display())),
             }
         }
     }
@@ -1042,9 +1124,13 @@ impl App {
                 self.quick_connect.clear();
             }
         }
-        for message in self.config_error.iter().chain(self.notice.iter()) {
+        for message in self.config_error.iter().chain(self.error.iter()) {
             ui.add_space(4.0);
             ui.label(RichText::new(message).color(chrome.danger).small());
+        }
+        if let Some(message) = &self.info {
+            ui.add_space(4.0);
+            ui.label(RichText::new(message).color(chrome.muted).small());
         }
         ui.add_space(6.0);
 
@@ -1305,6 +1391,42 @@ impl App {
             "",
             Command::SetAppearance(Appearance::Dark),
         );
+        add(
+            "Import ~/.ssh/config",
+            "or drop session files here",
+            Command::ImportSshConfig,
+        );
+        #[cfg(windows)]
+        {
+            add(
+                "Import PuTTY sessions from the registry",
+                "",
+                Command::ImportRegistry { kitty: false },
+            );
+            add(
+                "Import KiTTY sessions from the registry",
+                "",
+                Command::ImportRegistry { kitty: true },
+            );
+        }
+        let scope = self
+            .focused_pane()
+            .and_then(|id| self.panes.get(&id))
+            .and_then(|e| e.pane.spec.session_id);
+        for snippet in self.config.snippets_for(scope) {
+            items.push(PaletteItem {
+                label: format!("Run: {}", snippet.name),
+                hint: snippet
+                    .text
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(40)
+                    .collect(),
+                command: Command::RunSnippet(snippet.text.clone()),
+            });
+        }
         for theme in &self.themes {
             items.push(PaletteItem {
                 label: format!("Theme: {}", theme.name),
@@ -1406,6 +1528,13 @@ impl App {
                                         FontId::proportional(12.0),
                                         chrome.muted,
                                     );
+                                    row.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::Button,
+                                            true,
+                                            &item.label,
+                                        )
+                                    });
                                     if row.clicked() {
                                         chosen = Some(item.command.clone());
                                     }
@@ -1485,6 +1614,76 @@ impl App {
         } else {
             self.unlock = Some(unlock);
         }
+    }
+
+    /// Saved commands on a folder or at the root.
+    fn snippets_section(&mut self, ui: &mut Ui, target: InspectTarget, chrome: &Chrome) -> bool {
+        let list = match target {
+            InspectTarget::Root => Some(&mut self.config.snippets),
+            InspectTarget::Node(id) => match self.config.find_mut(id) {
+                Some(Node::Folder(folder)) => Some(&mut folder.snippets),
+                _ => None,
+            },
+        };
+        let Some(list) = list else { return false };
+        let mut changed = false;
+        ui.add_space(6.0);
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Snippets").size(13.0));
+            ui.with_layout(UiLayout::right_to_left(Align::Center), |ui| {
+                if ui.small_button("New").clicked() {
+                    list.push(Snippet {
+                        name: "New snippet".to_string(),
+                        text: String::new(),
+                    });
+                    changed = true;
+                }
+            });
+        });
+        if list.is_empty() {
+            ui.label(
+                RichText::new("Run these from the command palette.")
+                    .size(12.0)
+                    .color(chrome.muted),
+            );
+        }
+        let mut remove = None;
+        for (index, snippet) in list.iter_mut().enumerate() {
+            ui.push_id(("snippet", index), |ui| {
+                let label = ui
+                    .label(RichText::new("Name").size(12.0).color(chrome.muted))
+                    .id;
+                changed |= ui
+                    .add(TextEdit::singleline(&mut snippet.name).desired_width(f32::INFINITY))
+                    .labelled_by(label)
+                    .changed();
+                let label = ui
+                    .label(RichText::new("Command").size(12.0).color(chrome.muted))
+                    .id;
+                changed |= ui
+                    .add(
+                        TextEdit::multiline(&mut snippet.text)
+                            .font(egui::TextStyle::Monospace)
+                            .hint_text("show version")
+                            .desired_rows(1)
+                            .desired_width(f32::INFINITY),
+                    )
+                    .labelled_by(label)
+                    .changed();
+                if ui
+                    .small_button(RichText::new("Delete snippet").color(chrome.danger))
+                    .clicked()
+                {
+                    remove = Some(index);
+                }
+            });
+        }
+        if let Some(index) = remove {
+            list.remove(index);
+            changed = true;
+        }
+        changed
     }
 
     /// Logins, shown under global settings. Passwords go straight to the vault.
@@ -1569,7 +1768,7 @@ impl App {
                                         changed = true;
                                         self.password_drafts.remove(&id);
                                     }
-                                    Err(e) => self.notice = Some(e.to_string()),
+                                    Err(e) => self.error = Some(e.to_string()),
                                 }
                             }
                         }
@@ -1722,6 +1921,9 @@ impl App {
                         show_serial,
                         chrome,
                     );
+                }
+                if !is_session {
+                    changed |= self.snippets_section(ui, target, chrome);
                 }
                 if target == InspectTarget::Root {
                     self.identities_section(ui, chrome);
@@ -1907,6 +2109,8 @@ fn tree_rows(
         let id = node.id();
         let (rect, response) =
             ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click_and_drag());
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, node.name()));
         let indent = 6.0 + depth as f32 * 14.0;
         if selected == Some(id) {
             ui.painter().rect_filled(rect, 6, chrome.selected);
@@ -2647,6 +2851,11 @@ impl App {
         let id = self.focused_pane().unwrap();
         let core = self.panes[&id].pane.shared.core.lock().unwrap();
         core.visible_lines().iter().any(|line| line.contains(text))
+    }
+
+    pub fn import_for_test(&mut self, path: &std::path::Path) {
+        let result = linecon_config::import::import_path(path).unwrap().unwrap();
+        self.finish_import(result);
     }
 
     pub fn tab_count(&self) -> usize {

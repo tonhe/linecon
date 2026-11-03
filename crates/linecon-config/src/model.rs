@@ -104,6 +104,13 @@ pub struct Overrides {
     pub serial_flow: Option<FlowControl>,
 }
 
+/// A saved command, offered for sessions under the folder that holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Snippet {
+    pub name: String,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Folder {
     pub id: Id,
@@ -112,6 +119,8 @@ pub struct Folder {
     pub collapsed: bool,
     #[serde(default)]
     pub settings: Overrides,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub snippets: Vec<Snippet>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Node>,
 }
@@ -192,6 +201,9 @@ pub struct Config {
     pub next_id: Id,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub identities: Vec<Identity>,
+    /// Snippets offered everywhere.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub snippets: Vec<Snippet>,
     pub nodes: Vec<Node>,
 }
 
@@ -202,6 +214,7 @@ impl Default for Config {
             settings: Overrides::default(),
             next_id: 1,
             identities: Vec::new(),
+            snippets: Vec::new(),
             nodes: Vec::new(),
         }
     }
@@ -249,6 +262,21 @@ impl Config {
         };
         self.children_mut(parent)?.push(Node::Session(session));
         Some(id)
+    }
+
+    /// Snippets for a node, or for the root with `None`: global ones first, then
+    /// each enclosing folder's, then its own if it is a folder.
+    pub fn snippets_for(&self, id: Option<Id>) -> Vec<&Snippet> {
+        let mut out: Vec<&Snippet> = self.snippets.iter().collect();
+        if let Some(id) = id {
+            for folder in self.ancestors(id).unwrap_or_default() {
+                out.extend(&folder.snippets);
+            }
+            if let Some(Node::Folder(folder)) = self.find(id) {
+                out.extend(&folder.snippets);
+            }
+        }
+        out
     }
 
     /// Adds an identity, returning its id.
@@ -435,6 +463,36 @@ mod tests {
             host: "sw1".into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn snippets_follow_the_tree() {
+        let mut c = Config::default();
+        c.snippets.push(Snippet {
+            name: "global".into(),
+            text: "g".into(),
+        });
+        let site = c.add_folder(None, "site").unwrap();
+        let other = c.add_folder(None, "other").unwrap();
+        let core = c.add_folder(Some(site), "core").unwrap();
+        let sw = c.add_session(Some(core), "sw", target()).unwrap();
+        let elsewhere = c.add_session(Some(other), "x", target()).unwrap();
+        let mut add = |id: Id, name: &str| {
+            if let Some(Node::Folder(f)) = c.find_mut(id) {
+                f.snippets.push(Snippet {
+                    name: name.into(),
+                    text: String::new(),
+                });
+            }
+        };
+        add(site, "site-wide");
+        add(core, "core-only");
+        add(other, "other-only");
+        let names =
+            |id| -> Vec<String> { c.snippets_for(id).iter().map(|s| s.name.clone()).collect() };
+        assert_eq!(names(Some(sw)), ["global", "site-wide", "core-only"]);
+        assert_eq!(names(Some(elsewhere)), ["global", "other-only"]);
+        assert_eq!(names(None), ["global"]);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! The session tree: folders carry settings, children inherit them, and every
 //! resolved value knows where it came from so the UI can show it.
 
+pub mod import;
 mod model;
 mod paths;
 mod resolve;
