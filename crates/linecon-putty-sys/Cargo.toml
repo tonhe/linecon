@@ -10,3 +10,4 @@ links = "linecon_putty"
 [build-dependencies]
 cc = "1"
 cmake = "0.1"
+dunce = "1"

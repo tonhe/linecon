@@ -375,8 +375,13 @@ lc_session *lc_session_open(const lc_setting *settings, size_t n, void *user,
                                conf_get_bool(conf, CONF_tcp_keepalives));
     sfree(realhost);
     if (error) {
+        /*
+         * Every backend sets its handle before it can fail, and a socket that
+         * failed synchronously still has a callback queued that would call
+         * our seat. Freeing the backend cancels it, so do that before the
+         * seat goes away.
+         */
         *error_out = error;
-        s->backend = NULL;
         lc_session_close(s);
         return NULL;
     }
