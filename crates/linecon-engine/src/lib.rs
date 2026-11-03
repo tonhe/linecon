@@ -1,0 +1,16 @@
+//! Event-driven sessions on top of PuTTY.
+//!
+//! PuTTY keeps global state, so one thread owns all of it and every session
+//! runs there. [`Session`] handles talk to that thread through a command queue
+//! and receive [`Event`]s on a channel.
+
+pub mod algorithms;
+mod engine;
+pub mod hostkeys;
+pub mod negotiation;
+pub mod settings;
+
+pub use engine::{
+    putty_version, set_hostkey_store, Event, HostKeyPrompt, HostKeyVerdict, OpenError, Prompt,
+    PromptField, RecvError, Session, Special,
+};

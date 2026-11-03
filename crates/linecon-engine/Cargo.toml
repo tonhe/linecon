@@ -1,0 +1,10 @@
+[package]
+name = "linecon-engine"
+description = "Safe event-driven API over the PuTTY protocol engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+linecon-putty-sys = { path = "../linecon-putty-sys" }

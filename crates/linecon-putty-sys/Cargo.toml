@@ -1,0 +1,12 @@
+[package]
+name = "linecon-putty-sys"
+description = "FFI bindings to the PuTTY shim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+links = "linecon_putty"
+
+[build-dependencies]
+cc = "1"
+cmake = "0.1"

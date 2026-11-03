@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+jobs:
+  lint:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64, os: ubuntu-22.04, require_docker: "1" }
+          - { name: linux-arm64, os: ubuntu-22.04-arm, require_docker: "1" }
+          - { name: macos-arm64, os: macos-15 }
+          - { name: macos-x64, os: macos-15-intel }
+          - { name: windows-x64, os: windows-2022 }
+    runs-on: ${{ matrix.os }}
+    env:
+      LINECON_REQUIRE_DOCKER: ${{ matrix.require_docker }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        shell: bash
+        run: |
+          # An empty variable still counts as set for the skip check.
+          if [ -z "$LINECON_REQUIRE_DOCKER" ]; then unset LINECON_REQUIRE_DOCKER; fi
+          cargo test --workspace
+      - name: Build release binary
+        run: cargo build --release -p linecon
+      - name: Smoke test release binary
+        shell: bash
+        run: target/release/linecon --version
+      - name: Package
+        shell: bash
+        run: |
+          mkdir dist
+          case "${{ matrix.name }}" in
+            windows-*) cp target/release/linecon.exe "dist/linecon-${{ matrix.name }}.exe" ;;
+            *) cp target/release/linecon "dist/linecon-${{ matrix.name }}" ;;
+          esac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linecon-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [lint, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/*
+          --repo "$GITHUB_REPOSITORY" --generate-notes

@@ -1,0 +1,10 @@
+[package]
+name = "linecon"
+description = "A portable SSH, Telnet and serial client for network engineers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+linecon-engine = { path = "../linecon-engine" }
