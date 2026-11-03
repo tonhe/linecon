@@ -30,7 +30,7 @@
 
 - Snippet sharing by exported file.
 
-- First real run on macOS: the window, Keychain prompts and agent login all work. Fixes from that are in
+- First real run on macOS: the window opens, and key login worked, probably through the agent. Fixes from that are in
   `specs/011-first-real-use`.
 
 ## In progress
@@ -49,8 +49,8 @@
 - Windows and macOS do not run the Docker legacy test, because hosted runners lack a Linux
   container runtime. They run the loopback tests, and the protocol code is shared.
 - Ctrl+V with an empty clipboard sends nothing.
-- OS secret stores are only automatically tested on Windows; Keychain and secret-service need a
-  logged-in desktop session.
+- OS secret stores are only automatically tested on Windows; Keychain has not been confirmed on a real Mac,
+  and secret-service needs a logged-in desktop session.
 - Pageant and the 1Password agent are untested. A remote forward has no automated test.
 - Importers are tested against samples written from the formats, not exports from real installs.
 - MCP is tested with its own client code and has not been run against a real MCP client.
