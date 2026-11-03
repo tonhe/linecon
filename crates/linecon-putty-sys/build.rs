@@ -18,9 +18,8 @@ const PUTTY_LIBS: &[&str] = &[
 
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let putty = manifest
-        .join("../../vendor/putty")
-        .canonicalize()
+    // dunce avoids Windows extended-length paths, which MSBuild cannot open.
+    let putty = dunce::canonicalize(manifest.join("../../vendor/putty"))
         .expect("vendor/putty is missing; run: git submodule update --init --recursive");
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
     let windows = target_os == "windows";
