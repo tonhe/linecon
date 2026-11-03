@@ -49,7 +49,8 @@
 - Whatever real use of the window turns up.
 
 ## Blocked
-- Nothing.
+- Windows signing waits on the SignPath Foundation application, submitted 2026-11-03.
+- macOS signing waits on Developer ID secrets in the repository. See `docs/macos-signing.md`.
 
 ## Known gaps
 - The window is driven automatically on Linux and has been run on macOS by hand. Windows has only been run headlessly.
