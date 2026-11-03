@@ -57,12 +57,7 @@ jobs:
         run: target/release/linecon --version
       - name: Package
         shell: bash
-        run: |
-          mkdir dist
-          case "${{ matrix.name }}" in
-            windows-*) cp target/release/linecon.exe "dist/linecon-${{ matrix.name }}.exe" ;;
-            *) cp target/release/linecon "dist/linecon-${{ matrix.name }}" ;;
-          esac
+        run: packaging/package.sh "${{ matrix.name }}"
       - uses: actions/upload-artifact@v4
         with:
           name: linecon-${{ matrix.name }}

@@ -27,3 +27,4 @@
   container runtime. They run the loopback tests, and the protocol code is shared.
 - Jump hosts are wired to PuTTY's SSH proxy but not yet tested end to end.
 - Ctrl+V with an empty clipboard sends nothing.
+- macOS builds are not notarized, so Gatekeeper blocks them until allowed by hand.

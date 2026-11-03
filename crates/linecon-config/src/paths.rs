@@ -17,6 +17,22 @@ pub struct ConfigLocation {
     pub dir: PathBuf,
 }
 
+/// The folder a user thinks of as "next to the program". Inside a macOS bundle
+/// that is the folder holding the .app, since the bundle itself is signed and
+/// must not be written to.
+fn portable_root(exe_dir: &Path) -> PathBuf {
+    if exe_dir.ends_with("Contents/MacOS") {
+        if let Some(bundle) = exe_dir.parent().and_then(Path::parent) {
+            if bundle.extension().is_some_and(|e| e == "app") {
+                if let Some(folder) = bundle.parent() {
+                    return folder.to_path_buf();
+                }
+            }
+        }
+    }
+    exe_dir.to_path_buf()
+}
+
 impl ConfigLocation {
     /// Works out the location for this run of the program.
     pub fn detect() -> Self {
@@ -29,6 +45,8 @@ impl ConfigLocation {
     }
 
     fn choose(exe_dir: Option<&Path>, user_dir: Option<PathBuf>) -> Self {
+        let beside = exe_dir.map(portable_root);
+        let exe_dir = beside.as_deref();
         if let Some(dir) = exe_dir {
             if dir.join(PORTABLE_MARKER).exists() {
                 return Self {
@@ -85,6 +103,16 @@ mod tests {
         assert!(loc.known_hosts_file().starts_with(&dir));
         assert!(loc.config_file().starts_with(&dir));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn portable_data_sits_beside_a_macos_bundle() {
+        let exe = Path::new("/Volumes/USB/linecon0.app/Contents/MacOS");
+        assert_eq!(portable_root(exe), Path::new("/Volumes/USB"));
+        // Only a real bundle gets this treatment.
+        let plain = Path::new("/opt/Contents/MacOS");
+        assert_eq!(portable_root(plain), plain);
+        assert_eq!(portable_root(Path::new("/usr/bin")), Path::new("/usr/bin"));
     }
 
     #[test]

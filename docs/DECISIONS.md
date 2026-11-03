@@ -88,3 +88,12 @@ nothing, because egui emits no event for it.
 Standard RustCrypto implementations rather than anything from PuTTY, which has no API for this.
 The header is authenticated, its cost parameters are capped so a tampered file cannot demand
 absurd memory, and a wrong passphrase looks the same as tampering. These only protect local files.
+
+## 2026-11-03: macOS ships as a zipped .app as well as a bare executable
+
+A bare Mach-O file is awkward on a Mac: Finder cannot treat it as an app, and it loses its
+executable bit inside an Actions artifact zip. The .app is still one download, and the program is
+the same single binary, so constraint 2 holds. Linux and macOS archives preserve the executable bit.
+The bundle is ad-hoc signed only. Notarization needs a paid Apple Developer account, so Gatekeeper
+still blocks a downloaded copy until the user allows it. In portable mode the marker and data sit
+beside the .app, because writing inside a signed bundle would break it.

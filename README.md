@@ -26,6 +26,18 @@ what was allowed, and can allow legacy algorithms with one click:
 
 Early development; see [docs/STATUS.md](docs/STATUS.md).
 
+## Install
+
+Downloads are on the [releases page](https://github.com/tonhe/linecon/releases).
+
+- **macOS**: unzip `linecon0-macos-*.app.zip` (`arm64` for Apple silicon, `x64` for Intel). The app
+  is not notarized yet, so macOS blocks it at first. Either run
+  `xattr -dr com.apple.quarantine linecon0.app`, or try to open it once and then choose
+  Open Anyway under System Settings > Privacy & Security. The `.tar.gz` is the same program as a
+  bare executable for terminal use.
+- **Linux**: unpack `linecon-linux-*.tar.gz` and run `./linecon`.
+- **Windows**: run `linecon-windows-x64.exe`. SmartScreen may warn, since it is unsigned.
+
 ## Use
 
 Run `linecon` with no arguments for the window, or with arguments for a command-line

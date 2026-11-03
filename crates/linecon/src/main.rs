@@ -19,7 +19,11 @@ mod themes;
 mod ui_tests;
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // Older macOS passes a process serial number when launching from Finder.
+    let args: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|a| !a.starts_with("-psn_"))
+        .collect();
     if !args.is_empty() {
         attach_console();
         std::process::exit(cli::run(args));
