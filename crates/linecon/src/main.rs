@@ -10,6 +10,7 @@ mod app;
 mod cli;
 mod keys;
 mod pane;
+mod serial_ports;
 mod session_log;
 mod style;
 mod terminal;

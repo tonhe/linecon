@@ -197,18 +197,23 @@ impl AlgorithmPolicy {
     }
 
     fn list(ordered: &[&'static str], table: &[AlgorithmClass], legacy: bool) -> String {
-        // Legacy entries go below WARN unless the toggle is on, whatever order
-        // the user chose; PuTTY then asks before using them.
-        let is_legacy = |t: &&&str| table.iter().any(|c| c.token == **t && c.legacy);
-        let (old, new): (Vec<_>, Vec<_>) = ordered.iter().partition(is_legacy);
-        let mut out: Vec<&str> = new.into_iter().copied().collect();
-        if legacy {
-            out.extend(old.into_iter().copied());
+        let mut out: Vec<&str> = if legacy {
+            // Nothing is refused, so the user's order stands as chosen, even with
+            // an old cipher ahead of a new one.
+            let mut out = ordered.to_vec();
             out.push("WARN");
+            out
         } else {
+            // Legacy entries go below WARN, whatever order the user chose, so that
+            // PuTTY asks and the application can decline.
+            let is_legacy = |t: &&&str| table.iter().any(|c| c.token == **t && c.legacy);
+            let (old, new): (Vec<&&str>, Vec<&&str>) = ordered.iter().partition(is_legacy);
+            let mut out: Vec<&str> = new.into_iter().copied().collect();
             out.push("WARN");
             out.extend(old.into_iter().copied());
-        }
+            out
+        };
+        out.dedup();
         out.join(",")
     }
 
@@ -335,6 +340,6 @@ mod tests {
         ];
         let settings = policy.to_settings();
         let cipher = &settings.iter().find(|(k, _)| *k == "Cipher").unwrap().1;
-        assert_eq!(cipher, "aes,chacha20,aesgcm,arcfour,3des,des,blowfish,WARN");
+        assert_eq!(cipher, "arcfour,3des,aes,chacha20,aesgcm,des,blowfish,WARN");
     }
 }

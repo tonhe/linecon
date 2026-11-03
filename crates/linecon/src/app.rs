@@ -2296,6 +2296,17 @@ fn target_editor(ui: &mut Ui, name: &mut String, target: &mut Target, chrome: &C
     });
     if target.protocol == Protocol::Serial {
         let line_label = label(ui, "Serial device");
+        let ports = crate::serial_ports::list_ports();
+        if !ports.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                for port in ports {
+                    if ui.selectable_label(target.line == port, &port).clicked() {
+                        target.line = port;
+                        changed = true;
+                    }
+                }
+            });
+        }
         changed |= ui
             .add(
                 TextEdit::singleline(&mut target.line)
@@ -2645,6 +2656,24 @@ fn settings_rows(
     if show_serial {
         ui.add_space(6.0);
         ui.separator();
+        ui.add_space(4.0);
+        let preset_label = ui.label(RichText::new("Console preset").size(13.0)).id;
+        let preset = egui::ComboBox::from_id_salt("console-preset")
+            .selected_text("Choose a cable type")
+            .width(260.0)
+            .show_ui(ui, |ui| {
+                for preset in &crate::serial_ports::CONSOLE_PRESETS {
+                    if ui.selectable_label(false, preset.label).clicked() {
+                        o.serial_baud = Some(preset.baud);
+                        o.serial_data_bits = Some(preset.data_bits);
+                        o.serial_parity = Some(preset.parity);
+                        o.serial_stop_half_bits = Some(2);
+                        o.serial_flow = Some(FlowControl::None);
+                        changed = true;
+                    }
+                }
+            });
+        preset.response.labelled_by(preset_label);
         let header = row_header(
             ui,
             "Baud rate",

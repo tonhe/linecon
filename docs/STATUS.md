@@ -22,8 +22,10 @@
 
 - The legacy toggle now reaches SSH-1-only devices by itself. Auto-reconnect retries real drops only.
 
+- Serial port discovery and console presets. Algorithm order chosen by the user is what PuTTY negotiates.
+
 ## In progress
-- Gaps found by comparing the brief with the code (`specs/007-hardening`).
+- Next: SFTP pane.
 
 ## Next
 - SFTP pane, MCP server, snippet sharing.

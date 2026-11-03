@@ -14,5 +14,5 @@ RUN printf 'deb [trusted=yes] http://archive.debian.org/debian jessie main\n' > 
  && ssh-keygen -q -t rsa1 -b 1024 -N '' -f /etc/ssh/rsa1
 COPY sshd-*.conf /etc/ssh/
 COPY start.sh /start.sh
-EXPOSE 2201 2202 2203 2204
+EXPOSE 2201 2202 2203 2204 2205
 CMD ["/bin/sh", "/start.sh"]

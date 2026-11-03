@@ -381,8 +381,11 @@ pub fn read_windows_registry(kitty: bool) -> Result<ImportResult, String> {
         r"HKCU\Software\SimonTatham\PuTTY\Sessions"
     };
     let path = std::env::temp_dir().join(format!("linecon-reg-{}.reg", std::process::id()));
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let status = std::process::Command::new("reg")
         .args(["export", key, path.to_str().ok_or("bad temp path")?, "/y"])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| e.to_string())?;
     if !status.status.success() {

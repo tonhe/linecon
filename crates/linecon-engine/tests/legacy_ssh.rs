@@ -22,6 +22,7 @@ struct Server {
     arcfour_dss: u16,
     ssh1: u16,
     unmatched_cipher: u16,
+    choice: u16,
 }
 
 fn docker(args: &[&str]) -> Option<String> {
@@ -48,6 +49,7 @@ fn start_server() -> Option<Server> {
         arcfour_dss: port("2202")?,
         ssh1: port("2203")?,
         unmatched_cipher: port("2204")?,
+        choice: port("2205")?,
     };
     // Reap the container when the test process exits, whatever happens.
     extern "C" fn stop() {
@@ -466,4 +468,28 @@ fn a_changed_host_key_is_never_accepted_silently() {
         }
     }
     panic!("no closure after rejecting a changed key");
+}
+
+/// The order a user picks is what PuTTY actually negotiates, including putting
+/// an old cipher first on a device that also offers a newer one.
+#[test]
+fn chosen_cipher_order_is_what_gets_negotiated() {
+    let Some(server) = server() else { return };
+    let negotiated = |ciphers: Vec<&'static str>| -> String {
+        let policy = AlgorithmPolicy {
+            ciphers,
+            ..AlgorithmPolicy::legacy()
+        };
+        let (session, log) = log_in(&settings(server.choice, &policy));
+        drop(session);
+        log.into_iter()
+            .find(|l| l.contains("encryption"))
+            .unwrap_or_else(|| "no cipher line in the log".to_string())
+    };
+    let default = negotiated(AlgorithmPolicy::legacy().ciphers);
+    assert!(default.contains("AES"), "{default}");
+    let chosen = negotiated(vec![
+        "3des", "aes", "chacha20", "aesgcm", "des", "blowfish", "arcfour",
+    ]);
+    assert!(chosen.contains("DES"), "{chosen}");
 }

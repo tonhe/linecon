@@ -665,3 +665,74 @@ fn legacy_toggle_reaches_an_ssh1_only_device() {
         linecon_engine::algorithms::SshVersion::V1
     );
 }
+
+#[test]
+fn search_finds_scrollback_and_steps_between_matches() {
+    use crate::pane::{Pane, PaneSpec};
+    use crate::terminal_view::{search_step, Search};
+    use alacritty_terminal::grid::Dimensions;
+    use std::sync::Arc;
+
+    let spec = PaneSpec {
+        name: "s".into(),
+        session_id: None,
+        settings: linecon_engine::settings::Settings::raw("demo", 1),
+        policy: AlgorithmPolicy::modern(),
+        log_dir: None,
+        scrollback: 10_000,
+        copy_on_select: true,
+        auto_reconnect: false,
+        accept_weak: false,
+        password: None,
+    };
+    let pane = Pane::offline(spec, Arc::new(|| {}));
+    {
+        let mut core = pane.shared.core.lock().unwrap();
+        for i in 0..500 {
+            let line = if i == 20 || i == 300 {
+                format!("interface Gi{i}\r\n")
+            } else {
+                format!("line {i}\r\n")
+            };
+            core.feed(line.as_bytes());
+        }
+    }
+    let line_of = |search: &Search| search.current.expect("a match").0.line.0;
+    let shown = |search: &Search| {
+        let core = pane.shared.core.lock().unwrap();
+        let offset = core.term.grid().display_offset() as i32;
+        let row = line_of(search) + offset;
+        row >= 0 && row < core.term.screen_lines() as i32
+    };
+
+    let mut search = Search {
+        query: "interface".into(),
+        ..Default::default()
+    };
+    // Backwards from the live screen reaches the newer match first.
+    search_step(&pane, &mut search, false);
+    let newer = line_of(&search);
+    assert!(shown(&search), "the match was not scrolled into view");
+    search_step(&pane, &mut search, false);
+    let older = line_of(&search);
+    assert!(
+        older < newer,
+        "stepping back did not move: {older} vs {newer}"
+    );
+    assert!(shown(&search));
+    search_step(&pane, &mut search, true);
+    assert_eq!(line_of(&search), newer, "stepping forward did not return");
+
+    let mut search = Search {
+        query: "no-such-text".into(),
+        ..Default::default()
+    };
+    search_step(&pane, &mut search, false);
+    assert!(search.no_match && search.current.is_none());
+    let mut search = Search {
+        query: "(unclosed".into(),
+        ..Default::default()
+    };
+    search_step(&pane, &mut search, false);
+    assert!(search.no_match, "a bad pattern must not panic or match");
+}
