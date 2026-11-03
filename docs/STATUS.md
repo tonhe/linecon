@@ -3,7 +3,7 @@
 ## Done
 - PuTTY shim and engine: SSH, Telnet, serial and raw through one event API.
 - CI builds and tests macOS arm64/x64, Linux x64/arm64 and Windows x64.
-- Tagged release v0.0.1-alpha.1 published five executables (command-line only at that point).
+- Latest release: v0.0.1-alpha.4, with the window, .app and every feature below.
 - Legacy test on both Linux runners against a Docker OpenSSH 6.7: group1-sha1, 3des-cbc,
   arcfour256, hmac-md5, ssh-dss, SHA-1 ssh-rsa, 1024-bit host keys and SSH-1.
 - Negotiation failures report offered versus allowed.
