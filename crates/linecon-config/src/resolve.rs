@@ -1,7 +1,7 @@
 //! Works out each session's effective settings and where each one came from.
 
 use linecon_engine::algorithms::AlgorithmPolicy;
-use linecon_engine::settings::Settings;
+use linecon_engine::settings::{JumpHost, PortForward, Settings};
 
 use crate::model::*;
 
@@ -71,6 +71,7 @@ inheritable! {
     scrollback_lines: u32 = 100_000;
     copy_on_select: bool = true;
     jump_host: String = String::new();
+    port_forwards: Vec<String> = Vec::new();
     logging: bool = true;
     log_dir: String = String::new();
     legacy_algorithms: bool = false;
@@ -85,9 +86,6 @@ inheritable! {
     serial_parity: Parity = Parity::None;
     serial_flow: FlowControl = FlowControl::None;
 }
-
-/// PuTTY's storage value for proxying through an SSH connection's port forward.
-const PROXY_SSH_TCPIP: i32 = 6;
 
 impl Config {
     /// Effective settings at the root: what a session outside any folder sees.
@@ -205,10 +203,28 @@ impl Resolved {
             let keepalive = self.keepalive_secs.value;
             s.set("PingInterval", keepalive / 60)
                 .set("PingIntervalSecs", keepalive % 60);
+            let forwards: Vec<PortForward> = self
+                .port_forwards
+                .value
+                .iter()
+                .filter_map(|f| PortForward::parse(f).ok())
+                .collect();
+            if !forwards.is_empty() {
+                s.set("PortForwardings", PortForward::to_setting(&forwards));
+            }
             if !self.jump_host.value.is_empty() {
-                // PuTTY's own SSH proxy type, so the jump uses the same engine.
-                s.set("ProxyMethod", PROXY_SSH_TCPIP)
-                    .set("ProxyHost", &self.jump_host.value);
+                // A typo must fail the connection, never quietly go direct. An
+                // unparsable value is kept as a host name that will not resolve.
+                let jump = JumpHost::parse(&self.jump_host.value).unwrap_or_else(|_| JumpHost {
+                    user: String::new(),
+                    host: self.jump_host.value.replace([' ', ':'], "_"),
+                    port: 22,
+                });
+                let mut hop = Settings::ssh(&jump.host, jump.port, username);
+                hop.algorithms(&self.algorithm_policy());
+                hop.set("PingInterval", keepalive / 60)
+                    .set("PingIntervalSecs", keepalive % 60);
+                s.via_jump_host(&jump, &hop);
             }
         }
         s
@@ -447,7 +463,38 @@ mod tests {
             .resolve(t.sw)
             .unwrap()
             .engine_settings(&target(), "admin");
-        assert_eq!(s.get("ProxyHost"), Some("bastion"));
+        assert_eq!(s.get("ProxyHost"), Some("bastion:22"));
         assert_eq!(s.get("ProxyMethod"), Some("6"));
+        assert_eq!(s.get("Jump.HostName"), Some("bastion"));
+        assert_eq!(s.get("Jump.UserName"), Some("admin"));
+    }
+
+    #[test]
+    fn a_mistyped_jump_host_cannot_go_direct() {
+        let mut t = tree();
+        t.config.overrides_mut(t.site).unwrap().jump_host = Some("bastion:notaport".into());
+        let s = t
+            .config
+            .resolve(t.sw)
+            .unwrap()
+            .engine_settings(&target(), "admin");
+        assert_eq!(s.get("ProxyMethod"), Some("6"));
+        assert!(s.get("ProxyHost").unwrap().contains("notaport"));
+    }
+
+    #[test]
+    fn port_forwards_inherit_and_reach_the_engine() {
+        let mut t = tree();
+        t.config.overrides_mut(t.site).unwrap().port_forwards = Some(vec![
+            "L8080 web:80".into(),
+            "D1080".into(),
+            "nonsense".into(),
+        ]);
+        let s = t
+            .config
+            .resolve(t.sw)
+            .unwrap()
+            .engine_settings(&target(), "admin");
+        assert_eq!(s.get("PortForwardings"), Some("L8080=web:80,D1080="));
     }
 }

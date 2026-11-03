@@ -75,6 +75,8 @@ pub struct Overrides {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jump_host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub port_forwards: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub logging: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log_dir: Option<String>,

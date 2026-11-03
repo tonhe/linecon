@@ -51,7 +51,29 @@ static const char *sr_find(settings_r *sr, const char *key)
     return NULL;
 }
 
-settings_r *open_settings_r(const char *sessionname) { return NULL; }
+/*
+ * PuTTY's SSH proxy builds the jump connection's Conf by loading a saved session
+ * named after the proxy host, and otherwise uses defaults. So the jump host's
+ * settings, legacy algorithms included, are served from here under that name.
+ */
+static char *g_jump_name;
+static settings_r *g_jump_settings;
+
+void lc_set_jump_session(const char *name, settings_r *sr)
+{
+    sfree(g_jump_name);
+    if (g_jump_settings)
+        lc_settings_free(g_jump_settings);
+    g_jump_name = name ? dupstr(name) : NULL;
+    g_jump_settings = sr;
+}
+
+settings_r *open_settings_r(const char *sessionname)
+{
+    if (sessionname && g_jump_name && !strcmp(sessionname, g_jump_name))
+        return g_jump_settings;
+    return NULL;
+}
 void close_settings_r(settings_r *handle) {}
 
 char *read_setting_s(settings_r *handle, const char *key)

@@ -337,7 +337,29 @@ static const LogPolicyVtable shim_lp_vt = {
 lc_session *lc_session_open(const lc_setting *settings, size_t n, void *user,
                             char **error_out)
 {
-    settings_r *sr = lc_settings_from_kv(settings, n);
+    /* Keys prefixed "Jump." describe the jump host's own connection. */
+    static const char jump_prefix[] = "Jump.";
+    size_t prefix_len = sizeof(jump_prefix) - 1;
+    lc_setting *own = snewn(n + 1, lc_setting);
+    lc_setting *jump = snewn(n + 1, lc_setting);
+    size_t n_own = 0, n_jump = 0;
+    const char *proxy_host = NULL;
+    for (size_t i = 0; i < n; i++) {
+        if (!strncmp(settings[i].key, jump_prefix, prefix_len)) {
+            jump[n_jump].key = settings[i].key + prefix_len;
+            jump[n_jump++].value = settings[i].value;
+        } else {
+            if (!strcmp(settings[i].key, "ProxyHost"))
+                proxy_host = settings[i].value;
+            own[n_own++] = settings[i];
+        }
+    }
+    if (n_jump && proxy_host)
+        lc_set_jump_session(proxy_host, lc_settings_from_kv(jump, n_jump));
+
+    settings_r *sr = lc_settings_from_kv(own, n_own);
+    sfree(own);
+    sfree(jump);
     Conf *conf = conf_new();
     load_open_settings(sr, conf);
     lc_settings_free(sr);

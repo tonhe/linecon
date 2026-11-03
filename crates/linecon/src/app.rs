@@ -2370,9 +2370,57 @@ fn settings_rows(
         .labelled_by(header.label)
         .changed()
     {
-        o.jump_host = Some(jump);
+        o.jump_host = Some(jump.clone());
         changed = true;
     }
+    if let Err(e) = linecon_engine::settings::JumpHost::parse(&jump)
+        .map(|_| ())
+        .or_else(|e| {
+            if jump.trim().is_empty() {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        })
+    {
+        ui.label(RichText::new(e).color(chrome.danger).size(12.0));
+    }
+
+    let header = row_header(
+        ui,
+        "Port forwards",
+        &r.port_forwards,
+        o.port_forwards.is_some(),
+        chrome,
+    );
+    if header.clear {
+        o.port_forwards = None;
+        changed = true;
+    }
+    let mut forwards = o
+        .port_forwards
+        .clone()
+        .unwrap_or_else(|| r.port_forwards.value.clone())
+        .join("\n");
+    if ui
+        .add(
+            TextEdit::multiline(&mut forwards)
+                .hint_text("L8080 host:80\nR9000 host:22\nD1080")
+                .desired_rows(2)
+                .desired_width(f32::INFINITY),
+        )
+        .labelled_by(header.label)
+        .changed()
+    {
+        o.port_forwards = Some(forwards.lines().map(str::to_string).collect());
+        changed = true;
+    }
+    for line in forwards.lines().filter(|l| !l.trim().is_empty()) {
+        if let Err(e) = linecon_engine::settings::PortForward::parse(line) {
+            ui.label(RichText::new(e).color(chrome.danger).size(12.0));
+        }
+    }
+
     number_row!(
         ui,
         "Keepalive seconds",

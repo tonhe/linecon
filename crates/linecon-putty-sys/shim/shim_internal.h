@@ -7,6 +7,7 @@
 
 settings_r *lc_settings_from_kv(const lc_setting *settings, size_t n);
 void lc_settings_free(settings_r *sr);
+void lc_set_jump_session(const char *name, settings_r *sr);
 
 int lc_shim_hostkey_check(const char *host, int port, const char *keytype,
                           const char *key);

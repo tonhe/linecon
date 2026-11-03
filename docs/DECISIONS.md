@@ -109,3 +109,11 @@ because linking libdbus would add a runtime dependency to the portable binary.
 A wrong saved password could otherwise lock an account by retrying, so the second prompt goes to the
 user. With a jump host configured the prompt may belong to the jump host, and answering would send
 the target's password to the wrong machine, so saved passwords stay out of that path for now.
+
+## 2026-11-03: The jump host's settings are served as a PuTTY saved session
+
+PuTTY's SSH proxy builds its Conf by loading a saved session named after the proxy host, and otherwise
+uses defaults, which would drop legacy algorithms on the hop. The shim's storage layer answers that
+lookup with settings the application supplies, prefixed `Jump.`. PuTTY stays unpatched. `ProxyLocalhost`
+is always set, so a target that looks local cannot skip the jump. A mistyped jump host fails the
+connection rather than going direct.

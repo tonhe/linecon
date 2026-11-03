@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use linecon_engine::algorithms::{AlgorithmPolicy, SshVersion};
 use linecon_engine::negotiation::{self, NegotiationFailure};
-use linecon_engine::settings::Settings;
+use linecon_engine::settings::{JumpHost, PortForward, Settings};
 use linecon_engine::{Event, HostKeyVerdict, RecvError, Session};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -289,4 +289,181 @@ fn cancelling_the_password_prompt_ends_the_session() {
         }
     }
     panic!("no closure after cancelling");
+}
+
+/// A session that logs in and stays up, for tests that need a live connection.
+fn log_in(settings: &Settings) -> (Session, Vec<String>) {
+    let session = Session::open(settings).expect("open");
+    let deadline = Instant::now() + TIMEOUT;
+    let mut log = Vec::new();
+    while Instant::now() < deadline {
+        match session.recv_timeout(Duration::from_millis(100)) {
+            Ok(Event::HostKey(_)) => session.answer_hostkey(HostKeyVerdict::AcceptOnce),
+            Ok(Event::WeakCrypto { description }) => panic!("weak crypto asked: {description}"),
+            Ok(Event::Prompt(prompt)) => {
+                let answers: Vec<&str> = prompt
+                    .fields
+                    .iter()
+                    .map(|f| if f.echo { "lab" } else { PASSWORD })
+                    .collect();
+                session.answer_prompt(&answers);
+            }
+            Ok(Event::Log(line)) => log.push(line),
+            Ok(Event::SendOk) => return (session, log),
+            Ok(Event::Closed { reason, .. }) => panic!("closed: {reason:?}; log: {log:#?}"),
+            Ok(_) | Err(RecvError::Timeout) => {}
+            Err(RecvError::Disconnected) => panic!("engine went away"),
+        }
+    }
+    panic!("never logged in; log: {log:#?}");
+}
+
+#[test]
+fn through_a_legacy_jump_host_to_a_legacy_target() {
+    let Some(server) = server() else { return };
+    // From inside the container, the target is its own arcfour and ssh-dss sshd,
+    // so this only works if both hops really use their legacy settings.
+    let mut target = settings(2202, &AlgorithmPolicy::legacy());
+    target.set("HostName", "127.0.0.1");
+    let hop = settings(1, &AlgorithmPolicy::legacy());
+    let jump = JumpHost {
+        user: "lab".into(),
+        host: "127.0.0.1".into(),
+        port: server.group1_3des,
+    };
+    target.via_jump_host(&jump, &hop);
+    expect_marker(run_command(&target, COMMAND, false));
+}
+
+#[test]
+fn a_jump_host_that_refuses_fails_the_connection() {
+    let Some(server) = server() else { return };
+    // Modern settings on the hop against a legacy-only jump host must not connect.
+    let mut target = settings(2202, &AlgorithmPolicy::legacy());
+    let hop = settings(1, &AlgorithmPolicy::modern());
+    let jump = JumpHost {
+        user: "lab".into(),
+        host: "127.0.0.1".into(),
+        port: server.group1_3des,
+    };
+    target.via_jump_host(&jump, &hop);
+    let Outcome::Failed(_) = run_command(&target, COMMAND, false) else {
+        panic!("connected through a jump host that should have refused");
+    };
+}
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+fn read_banner(stream: &mut std::net::TcpStream) -> String {
+    use std::io::Read;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut buf = [0u8; 64];
+    let n = stream.read(&mut buf).expect("banner through the forward");
+    String::from_utf8_lossy(&buf[..n]).into_owned()
+}
+
+fn connect_retrying(port: u16) -> std::net::TcpStream {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match std::net::TcpStream::connect(("127.0.0.1", port)) {
+            Ok(stream) => return stream,
+            Err(e) if Instant::now() > deadline => panic!("forward never listened: {e}"),
+            Err(_) => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
+}
+
+/// Keeps the session's event queue moving while a forward is used.
+fn keep_pumping(session: Session) -> Session {
+    let deadline = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < deadline {
+        let _ = session.recv_timeout(Duration::from_millis(50));
+    }
+    session
+}
+
+#[test]
+fn local_and_dynamic_forwards_carry_traffic() {
+    use std::io::Write;
+    let Some(server) = server() else { return };
+    let (local, dynamic) = (free_port(), free_port());
+    let forwards = [
+        PortForward::parse(&format!("L{local} 127.0.0.1:2201")).unwrap(),
+        PortForward::parse(&format!("D{dynamic}")).unwrap(),
+    ];
+    let mut s = settings(server.group1_3des, &AlgorithmPolicy::legacy());
+    s.set("PortForwardings", PortForward::to_setting(&forwards));
+    let (session, _) = log_in(&s);
+    let session = keep_pumping(session);
+
+    let mut stream = connect_retrying(local);
+    assert!(read_banner(&mut stream).starts_with("SSH-2.0-OpenSSH_6.7"));
+
+    // SOCKS5 by hand: no auth, then CONNECT 127.0.0.1:2201.
+    let mut socks = connect_retrying(dynamic);
+    socks.write_all(&[5, 1, 0]).unwrap();
+    use std::io::Read;
+    socks
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut greeting = [0u8; 2];
+    socks.read_exact(&mut greeting).unwrap();
+    assert_eq!(greeting, [5, 0]);
+    socks
+        .write_all(&[5, 1, 0, 1, 127, 0, 0, 1, 0x08, 0x99])
+        .unwrap();
+    let mut reply = [0u8; 10];
+    socks.read_exact(&mut reply).unwrap();
+    assert_eq!(reply[1], 0, "SOCKS request refused: {reply:?}");
+    assert!(read_banner(&mut socks).starts_with("SSH-2.0-OpenSSH_6.7"));
+    drop(session);
+}
+
+#[test]
+fn a_changed_host_key_is_never_accepted_silently() {
+    use linecon_engine::hostkeys::{HostKeyLookup, HostKeyStore};
+    /// Claims every key seen under this name has changed. Other tests use an IP.
+    struct ChangedForLocalhost;
+    impl HostKeyStore for ChangedForLocalhost {
+        fn check(&self, host: &str, _: i32, _: &str, _: &str) -> HostKeyLookup {
+            if host == "localhost" {
+                HostKeyLookup::Changed
+            } else {
+                HostKeyLookup::Unknown
+            }
+        }
+        fn store(&self, _: &str, _: i32, _: &str, _: &str) {}
+    }
+    let Some(server) = server() else { return };
+    linecon_engine::set_hostkey_store(std::sync::Arc::new(ChangedForLocalhost));
+    let mut s = settings(server.group1_3des, &AlgorithmPolicy::legacy());
+    s.set("HostName", "localhost");
+    let session = Session::open(&s).expect("open");
+    let deadline = Instant::now() + TIMEOUT;
+    while Instant::now() < deadline {
+        match session.recv_timeout(Duration::from_millis(100)) {
+            Ok(Event::HostKey(prompt)) => {
+                // The window's warning card depends on this wording.
+                assert!(
+                    prompt.description.contains("does not match"),
+                    "{}",
+                    prompt.description
+                );
+                session.answer_hostkey(HostKeyVerdict::Reject);
+            }
+            Ok(Event::Prompt(_)) | Ok(Event::SendOk) => panic!("got past a changed key"),
+            Ok(Event::Closed { .. }) => return,
+            Ok(_) | Err(RecvError::Timeout) => {}
+            Err(RecvError::Disconnected) => panic!("engine went away"),
+        }
+    }
+    panic!("no closure after rejecting a changed key");
 }

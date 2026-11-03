@@ -14,11 +14,14 @@
 - Saved identities: username, key file, agent and password, inherited through folders. Passwords
   use the OS store, or a passphrase-encrypted file in portable mode, and are answered once.
 
+- Jump hosts through PuTTY's SSH proxy, with each hop's legacy settings, port forwards (local, remote,
+  dynamic) and ssh-agent login, tested against the Docker server. Changed host keys block.
+
 ## In progress
 - Nothing mid-task; next feature is being specified.
 
 ## Next
-- Agent support and port forwards, jump host tests, snippets, session imports, SFTP, MCP.
+- Snippets, session imports, SFTP, MCP.
 
 ## Blocked
 - Nothing.
@@ -28,9 +31,9 @@
   desktop on any platform; this machine has no display. Please try a build and report back.
 - Windows and macOS do not run the Docker legacy test, because hosted runners lack a Linux
   container runtime. They run the loopback tests, and the protocol code is shared.
-- Jump hosts are wired to PuTTY's SSH proxy but not yet tested end to end.
 - Ctrl+V with an empty clipboard sends nothing.
 - OS secret stores are only automatically tested on Windows; Keychain and secret-service need a
   logged-in desktop session.
+- Pageant and the 1Password agent are untested. A remote forward has no automated test.
 - Saved passwords are not used through a jump host, because the prompt may be the jump host's.
 - macOS builds are not notarized, so Gatekeeper blocks them until allowed by hand.
