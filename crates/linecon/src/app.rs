@@ -1530,7 +1530,7 @@ impl App {
                                     );
                                     row.widget_info(|| {
                                         egui::WidgetInfo::labeled(
-                                            egui::WidgetType::Button,
+                                            egui::Role::Button,
                                             true,
                                             &item.label,
                                         )
@@ -2109,8 +2109,7 @@ fn tree_rows(
         let id = node.id();
         let (rect, response) =
             ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click_and_drag());
-        response
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, node.name()));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, node.name()));
         let indent = 6.0 + depth as f32 * 14.0;
         if selected == Some(id) {
             ui.painter().rect_filled(rect, 6, chrome.selected);
