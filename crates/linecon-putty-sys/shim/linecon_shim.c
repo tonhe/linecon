@@ -390,9 +390,19 @@ lc_session *lc_session_open(const lc_setting *settings, size_t n, void *user,
     return s;
 }
 
+/*
+ * Backends null their socket when the peer closes, and several then dereference
+ * it unconditionally. Commands from the application can arrive after that, so
+ * everything that reaches a backend goes through this check.
+ */
+static bool session_live(lc_session *s)
+{
+    return s->backend && backend_connected(s->backend);
+}
+
 static void flush_pending_input(lc_session *s)
 {
-    if (!s->backend || !backend_sendok(s->backend))
+    if (!session_live(s) || !backend_sendok(s->backend))
         return;
     while (bufchain_size(&s->pending_input) > 0) {
         ptrlen chunk = bufchain_prefix(&s->pending_input);
@@ -403,7 +413,7 @@ static void flush_pending_input(lc_session *s)
 
 void lc_session_send(lc_session *s, const void *data, size_t len)
 {
-    if (!s->backend || !backend_connected(s->backend))
+    if (!session_live(s))
         return;
     bufchain_add(&s->pending_input, data, len);
     flush_pending_input(s);
@@ -411,13 +421,13 @@ void lc_session_send(lc_session *s, const void *data, size_t len)
 
 void lc_session_size(lc_session *s, int cols, int rows)
 {
-    if (s->backend)
+    if (session_live(s))
         backend_size(s->backend, cols, rows);
 }
 
 int lc_session_special(lc_session *s, int code, int arg)
 {
-    if (!s->backend)
+    if (!session_live(s))
         return 0;
     SessionSpecialCode sc;
     switch (code) {
@@ -433,7 +443,7 @@ int lc_session_special(lc_session *s, int code, int arg)
 
 void lc_session_unthrottle(lc_session *s, size_t backlog)
 {
-    if (s->backend)
+    if (session_live(s))
         backend_unthrottle(s->backend, backlog);
 }
 

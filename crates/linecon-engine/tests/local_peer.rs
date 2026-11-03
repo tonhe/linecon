@@ -120,3 +120,29 @@ fn many_sessions_stay_separate() {
         }
     }
 }
+
+#[test]
+fn reading_output_after_the_peer_closed_is_safe() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.write_all(b"last words\n").unwrap();
+    });
+    let session = Session::open(&Settings::raw("127.0.0.1", port)).unwrap();
+    // Let the engine see both the data and the close before anything is read,
+    // so flow control and every other command arrive at a closed backend.
+    std::thread::sleep(Duration::from_millis(300));
+    session.resize(100, 30);
+    session.send(b"too late\n");
+    session.special(linecon_engine::Special::Break);
+    let deadline = Instant::now() + TIMEOUT;
+    while Instant::now() < deadline {
+        match session.recv_timeout(Duration::from_millis(200)) {
+            Ok(Event::Closed { .. }) => return,
+            Ok(_) | Err(RecvError::Timeout) => {}
+            Err(RecvError::Disconnected) => panic!("engine went away"),
+        }
+    }
+    panic!("no Closed event");
+}

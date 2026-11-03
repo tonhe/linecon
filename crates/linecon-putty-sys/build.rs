@@ -38,7 +38,10 @@ fn main() {
         .define("PUTTY_GTK_VERSION", "NONE")
         .profile("Release");
     if windows {
-        cfg.static_crt(true);
+        // Must match the Rust side's crt-static, and PuTTY's cmake policy makes
+        // this the setting that counts rather than the compiler flags.
+        cfg.static_crt(true)
+            .define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreaded");
     }
     let out = cfg.build();
     let build = out.join("build");
