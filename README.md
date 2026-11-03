@@ -40,7 +40,8 @@ Downloads are on the [releases page](https://github.com/tonhe/linecon/releases).
   Open Anyway under System Settings > Privacy & Security. The `.tar.gz` is the same program as a
   bare executable for terminal use.
 - **Linux**: unpack `linecon-linux-*.tar.gz` and run `./linecon`.
-- **Windows**: run `linecon-windows-x64.exe`. SmartScreen may warn, since it is unsigned.
+- **Windows**: run `linecon-windows-x64.exe`. SmartScreen may warn, since it is unsigned. See the
+  [code signing policy](docs/code-signing-policy.md). A console window may flash when starting it from Explorer.
 
 ## Use
 

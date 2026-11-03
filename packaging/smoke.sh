@@ -6,6 +6,13 @@ case "$(uname -s)" in
   *) binary=target/release/linecon ;;
 esac
 rm -f smoke.txt
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    product=$(powershell -NoProfile -Command "(Get-Item '$binary').VersionInfo.ProductName" | tr -d '\r')
+    echo "product name: $product"
+    [ "$product" = linecon0 ] || { echo "the executable has lost its version details"; exit 1; }
+    ;;
+esac
 export LINECON_SMOKE_FRAMES=300
 if [ "$(uname -s)" = Linux ]; then
   Xvfb :99 -screen 0 1280x800x24 >/dev/null 2>&1 &
