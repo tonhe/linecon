@@ -139,6 +139,9 @@ def step(name):
             except Exception as e:  # keep going, a person would
                 shot("FAIL-" + name.replace(" ", "-")[:40])
                 results.append(("FAIL", name, str(e)))
+                # Close whatever is open, so one miss does not type into the next step.
+                key("Escape")
+                time.sleep(0.5)
                 print(f"FAIL  {name}: {str(e)[:500]}", flush=True)
                 traceback.print_exc(limit=1, file=open(f"{OUT}/trace.log", "a"))
         run.__name__ = name
@@ -254,13 +257,14 @@ def split():
 @step("command palette opens, filters, runs a theme change")
 def palette():
     key("ctrl+shift+p")
-    wait("a command")
+    # A list entry: the input's hint sits against the text cursor, which misreads.
+    wait("Split right")
     shot("palette")
     typed("theme nord")
     time.sleep(0.5)
     key("Return")
     time.sleep(1)
-    gone("a command")
+    gone("Split right")
     shot("theme-nord")
     assert 'theme = "Nord"' in read_config()
     key("ctrl+shift+p")
