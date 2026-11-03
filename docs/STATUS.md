@@ -37,6 +37,9 @@
 
 - Tested against a real IOS XE 17.18.2 router. RSA with SHA-2 connects by default; SHA-1 ssh-rsa needs legacy.
 
+- Checked with no flags against real IOS XE 17.18.2, Arista cEOS 4.36 and vJunos 26.2, in the CLI and through the
+  window's code path. See `tests/lab/README.md`.
+
 ## In progress
 - Fixes from real use on macOS.
 

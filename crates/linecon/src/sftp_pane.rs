@@ -144,6 +144,10 @@ impl Auth for WindowAuth {
     }
 
     fn prompt(&mut self, prompt: &Prompt) -> Option<Vec<String>> {
+        // Text with no questions, as Arista sends at login: nothing to ask the user.
+        if prompt.fields.is_empty() {
+            return Some(Vec::new());
+        }
         if should_auto_answer(prompt, self.tried_password, self.through_proxy) {
             if let Some(saved) = self.password.as_ref().and_then(|lookup| lookup()) {
                 self.tried_password = true;

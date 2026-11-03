@@ -1,0 +1,12 @@
+# Real device images, for checks CI cannot run because the images are licensed.
+# See tests/lab/README.md. Needs netlab, containerlab and these vrnetlab images.
+provider: clab
+plugin: [ multilab ]
+defaults.multilab.id: 42
+nodes:
+  iosxe:
+    device: iol
+  eos:
+    device: eos
+  junos:
+    device: vjunos-router

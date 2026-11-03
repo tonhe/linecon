@@ -345,6 +345,15 @@ fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint:
             Event::EchoEdit { echo, .. } => {
                 shared.local_echo.store(echo, Ordering::Relaxed);
             }
+            Event::Prompt(prompt) if prompt.fields.is_empty() => {
+                // A server can send text with no questions, as Arista does at every
+                // login. There is nothing to answer, so show it and carry on.
+                if let Some(text) = prompt.instruction.as_ref().filter(|t| !t.is_empty()) {
+                    let text = format!("{}\r\n", text.replace('\n', "\r\n"));
+                    shared.core.lock().unwrap().feed(text.as_bytes());
+                }
+                session.answer_prompt(&[]);
+            }
             Event::Prompt(prompt) => {
                 let through_proxy = spec.settings.get("ProxyHost").is_some();
                 let saved = spec

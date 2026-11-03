@@ -1380,3 +1380,77 @@ fn a_session_bundle_moves_between_installs_through_the_app() {
         "folders did not arrive"
     );
 }
+
+/// Real devices through the window's own code path, which decides about RSA
+/// separately from the command line. Run by tests/lab/README.md; needs the lab up.
+#[test]
+#[ignore = "needs the device lab"]
+fn real_devices_through_the_window_path() {
+    use crate::pane::{Pane, PaneSpec, Status};
+    use linecon_engine::HostKeyVerdict;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use zeroize::Zeroizing;
+
+    let lab = std::env::var("LINECON_LAB").expect("LINECON_LAB=name,host,user,password;...");
+    for device in lab.split(';') {
+        let parts: Vec<&str> = device.split(',').collect();
+        let [name, host, user, password] = parts[..] else {
+            panic!("bad entry: {device}")
+        };
+        let config = linecon_config::Config::default();
+        let resolved = config.resolve_root();
+        let target = Target {
+            host: host.into(),
+            ..Default::default()
+        };
+        let password = password.to_string();
+        let spec = PaneSpec {
+            name: name.into(),
+            session_id: None,
+            settings: resolved.engine_settings(&target, user),
+            policy: resolved.algorithm_policy(),
+            log_dir: None,
+            scrollback: 1000,
+            copy_on_select: true,
+            auto_reconnect: false,
+            accept_weak: resolved.legacy_algorithms.value,
+            password: Some(Arc::new(move || Some(Zeroizing::new(password.clone())))),
+        };
+        assert!(!spec.accept_weak, "this must test default settings");
+        let pane = Pane::new(spec, Arc::new(|| {}));
+        let deadline = Instant::now() + Duration::from_secs(40);
+        while pane.status() != Status::Live {
+            assert!(Instant::now() < deadline, "{name}: {:?}", pane.status());
+            let pending = pane.shared.pending.lock().unwrap().clone();
+            match pending {
+                Some(Pending::HostKey(_)) => pane.answer_hostkey(HostKeyVerdict::AcceptOnce),
+                Some(Pending::Prompt(p)) => panic!("{name} asked despite a saved password: {p:?}"),
+                None => {}
+            }
+            assert!(
+                !matches!(pane.status(), Status::Closed { .. }),
+                "{name}: {:?}",
+                pane.status()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        pane.send(b"show version\r");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let shown = loop {
+            let text = pane.shared.core.lock().unwrap().text_with_scrollback(500);
+            if text.to_lowercase().contains("version") && text.lines().count() > 3 {
+                break text;
+            }
+            assert!(Instant::now() < deadline, "{name} showed: {text}");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        println!(
+            "PASS  {name}: {}",
+            shown
+                .lines()
+                .find(|l| l.to_lowercase().contains("version"))
+                .unwrap_or("")
+        );
+    }
+}
