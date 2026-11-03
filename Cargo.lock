@@ -1949,7 +1949,7 @@ checksum = "d4a5ff6bcca6c4867b1c4fd4ef63e4db7436ef363e0ad7531d1558856bae64f4"
 
 [[package]]
 name = "linecon"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "alacritty_terminal",
  "crossterm",
@@ -1969,7 +1969,7 @@ dependencies = [
 
 [[package]]
 name = "linecon-config"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -1984,7 +1984,7 @@ dependencies = [
 
 [[package]]
 name = "linecon-engine"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "libc",
  "linecon-putty-sys",
@@ -1992,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "linecon-putty-sys"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "cc",
  "cmake",

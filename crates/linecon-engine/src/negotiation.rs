@@ -153,6 +153,23 @@ pub fn is_negotiation_failure(reason: &str) -> bool {
     MARKERS.iter().any(|m| reason.contains(m))
 }
 
+/// PuTTY's warning names the host key algorithm it chose, which is the only way to
+/// tell the RSA signatures apart: its preference list has one class covering
+/// rsa-sha2-512, rsa-sha2-256 and SHA-1 ssh-rsa. So that class stays below the
+/// warning line, and this lets the SHA-2 ones through. The text is PuTTY's own and
+/// the name comes from its table, so a server cannot influence it.
+pub fn weak_is_acceptable(description: &str) -> bool {
+    const FORMS: [&str; 2] = [
+        "The first host key type supported by the server is ",
+        "The first host key type we have stored for this server is ",
+    ];
+    FORMS.iter().any(|form| {
+        description.strip_prefix(form).is_some_and(|rest| {
+            rest.starts_with("rsa-sha2-256,") || rest.starts_with("rsa-sha2-512,")
+        })
+    })
+}
+
 /// True if this failure means the device only speaks SSH-1 and the policy allows
 /// that. The caller reconnects with [`SshVersion::V1`].
 pub fn should_fall_back_to_ssh1(reason: &str, policy: &AlgorithmPolicy) -> bool {
@@ -253,6 +270,31 @@ mod tests {
         assert!(text.contains("offered: diffie-hellman-group1-sha1"));
         assert!(text.contains("allowed: sntrup761x25519-sha512"));
         assert!(!text.contains("allowed: diffie-hellman-group1-sha1"));
+    }
+
+    #[test]
+    fn only_sha2_rsa_host_keys_pass_without_legacy() {
+        let warning = |first: &str, name: &str| {
+            format!("The first {first} is {name}, which is below the configured warning threshold.\nTo accept the risk and continue, continue.")
+        };
+        let server = "host key type supported by the server";
+        let cached = "host key type we have stored for this server";
+        assert!(weak_is_acceptable(&warning(server, "rsa-sha2-512")));
+        assert!(weak_is_acceptable(&warning(server, "rsa-sha2-256")));
+        assert!(weak_is_acceptable(&warning(cached, "rsa-sha2-512")));
+        assert!(!weak_is_acceptable(&warning(server, "ssh-rsa")));
+        assert!(!weak_is_acceptable(&warning(cached, "ssh-rsa")));
+        assert!(!weak_is_acceptable(&warning(server, "ssh-dss")));
+        // Other kinds of weak primitive never qualify, even with a matching name.
+        assert!(!weak_is_acceptable(&warning(
+            "key exchange algorithm supported by the server",
+            "rsa-sha2-512"
+        )));
+        assert!(!weak_is_acceptable(&warning(
+            "client-to-server cipher supported by the server",
+            "3des-cbc"
+        )));
+        assert!(!weak_is_acceptable("rsa-sha2-512"));
     }
 
     #[test]

@@ -463,10 +463,3 @@ impl Drop for Session {
         }));
     }
 }
-
-/// PuTTY's own version string, as sent on the wire.
-pub fn putty_version() -> String {
-    unsafe { CStr::from_ptr(sys::lc_putty_version()) }
-        .to_string_lossy()
-        .into_owned()
-}

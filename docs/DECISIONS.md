@@ -148,3 +148,16 @@ there. Dragging one to another folder keeps it for good. Passwords are saved onl
 No agreed standard exists for terminal client sessions, so linecon0 defines a small documented format using
 the same types as its config file. Export files get shared, so passwords are never included, not even encrypted.
 A folder export folds in what it inherited, and an import never touches existing entries.
+
+## 2026-11-03: RSA with SHA-2 is modern, and SHA-1 ssh-rsa is legacy
+
+PuTTY has one preference class for rsa-sha2-512, rsa-sha2-256 and ssh-rsa, so a list cannot separate them, and
+treating the class as legacy refused current gear such as IOS XE, which has only an RSA key signing with SHA-2.
+The class stays below the warning line, and the warning PuTTY raises names the exact algorithm it chose, so the
+application accepts it for rsa-sha2-* and declines it for ssh-rsa. PuTTY stays unpatched. A consequence is that
+modern keys are still preferred over RSA, as before.
+
+## 2026-11-03: We send our own SSH version string
+
+PuTTY's placeholder for unofficial builds, `-Unidentified-Local-Build`, appears in device logs. The shim defines
+the version strings itself, as `linecon_<version>`, so `utils/version.c` is never linked.

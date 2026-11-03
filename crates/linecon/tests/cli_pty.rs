@@ -32,15 +32,21 @@ impl Drop for Container {
 }
 
 fn start_server() -> Option<(Container, u16)> {
-    let context = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/docker/legacy-sshd");
-    docker(&["build", "-q", "-t", IMAGE, context.to_str()?])?;
+    start_image("legacy-sshd", IMAGE, "2201")
+}
+
+fn start_image(folder: &str, image: &str, first_port: &str) -> Option<(Container, u16)> {
+    let context = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/docker")
+        .join(folder);
+    docker(&["build", "-q", "-t", image, context.to_str()?])?;
     // Tests in this file run in parallel, each with its own server.
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let name = format!("linecon-cli-{}-{n}", std::process::id());
-    docker(&["run", "-d", "--rm", "--name", &name, "-P", IMAGE])?;
+    docker(&["run", "-d", "--rm", "--name", &name, "-P", image])?;
     let container = Container(name);
-    let port = docker(&["port", &container.0, "2201"])?
+    let port = docker(&["port", &container.0, first_port])?
         .lines()
         .next()?
         .rsplit(':')
@@ -132,9 +138,12 @@ fn spawn_on_pty(args: &[String], config_home: &Path) -> (std::process::Child, Te
     )
 }
 
-fn wait_for_exit(child: &mut std::process::Child) {
+fn wait_for_exit(child: &mut std::process::Child) -> std::process::ExitStatus {
     let deadline = Instant::now() + TIMEOUT;
-    while child.try_wait().unwrap().is_none() {
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
         if Instant::now() > deadline {
             let _ = child.kill();
             panic!("the client did not exit");
@@ -220,4 +229,134 @@ fn legacy_flag_falls_back_to_ssh1_and_keeps_the_keyboard() {
     term.expect("MARKER-42");
     wait_for_exit(&mut child);
     let _ = std::fs::remove_dir_all(&config);
+}
+
+fn temp_config(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("linecon-cli-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn start_or_skip(folder: &str, image: &str, port: &str) -> Option<(Container, u16)> {
+    let started = start_image(folder, image, port);
+    if started.is_none() {
+        assert!(
+            std::env::var_os("LINECON_REQUIRE_DOCKER").is_none(),
+            "Docker is required here"
+        );
+        eprintln!("SKIPPED: no container runtime");
+    }
+    started
+}
+
+/// Current gear like IOS XE has an RSA key signing with SHA-2. That is not legacy,
+/// and has to work with no flags at all.
+#[test]
+fn rsa_with_sha2_connects_by_default() {
+    let Some((_container, port)) =
+        start_or_skip("modern-rsa-sshd", "linecon-modern-rsa-sshd", "2301")
+    else {
+        return;
+    };
+    let config = temp_config("sha2");
+    let args: Vec<String> = ["ssh", "127.0.0.1", &port.to_string(), "lab"]
+        .map(String::from)
+        .to_vec();
+    let (mut child, mut term) = spawn_on_pty(&args, &config);
+    term.expect("Trust this key?");
+    term.type_text("o\r");
+    term.expect("password:");
+    term.type_text("lab-password\r");
+    term.expect("$");
+    term.type_text("echo MARKER-$((40+2)); exit 3\r");
+    term.expect("MARKER-42");
+    // A session that ended reports the remote's exit status.
+    assert_eq!(wait_for_exit(&mut child).code(), Some(3));
+    let _ = std::fs::remove_dir_all(&config);
+}
+
+/// A device offering only SHA-1 ssh-rsa is still refused until legacy is on, the
+/// failure is reported once, and the exit status says it failed.
+#[test]
+fn rsa_with_sha1_stays_behind_the_legacy_toggle() {
+    let Some((container, _)) = start_or_skip("modern-rsa-sshd", "linecon-modern-rsa-sshd", "2301")
+    else {
+        return;
+    };
+    let port = docker(&["port", &container.0, "2302"]).unwrap();
+    let port = port
+        .lines()
+        .next()
+        .unwrap()
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .to_string();
+    let config = temp_config("sha1");
+    let args: Vec<String> = ["ssh", "127.0.0.1", &port, "lab"]
+        .map(String::from)
+        .to_vec();
+    let (mut child, mut term) = spawn_on_pty(&args, &config);
+    term.expect("below the configured warning threshold");
+    term.expect("offered: ssh-rsa");
+    let status = wait_for_exit(&mut child);
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "a refused connection must not exit 0"
+    );
+    let mut rest = term.seen.clone();
+    while let Ok(more) = term.output.recv_timeout(Duration::from_millis(300)) {
+        rest.push_str(&String::from_utf8_lossy(&more));
+    }
+    assert!(
+        !rest.contains("below the configured"),
+        "reported twice: {rest}"
+    );
+    assert!(
+        rest.contains("allowed:") && rest.contains("rsa-sha2-512"),
+        "{rest}"
+    );
+
+    let args: Vec<String> = ["ssh", "127.0.0.1", &port, "lab", "--legacy"]
+        .map(String::from)
+        .to_vec();
+    let (mut child, mut term) = spawn_on_pty(&args, &config);
+    term.expect("Trust this key?");
+    term.type_text("o\r");
+    term.expect("password:");
+    term.type_text("lab-password\r");
+    term.expect("$");
+    term.type_text("exit\r");
+    assert_eq!(wait_for_exit(&mut child).code(), Some(0));
+    let _ = std::fs::remove_dir_all(&config);
+}
+
+/// Old gear refusing a connection is also a failure in the exit status.
+#[test]
+fn a_negotiation_failure_exits_non_zero() {
+    let Some((_container, port)) = start_or_skip("legacy-sshd", IMAGE, "2201") else {
+        return;
+    };
+    let config = temp_config("fail");
+    let args: Vec<String> = ["ssh", "127.0.0.1", &port.to_string(), "lab"]
+        .map(String::from)
+        .to_vec();
+    let (mut child, mut term) = spawn_on_pty(&args, &config);
+    term.expect("offered: diffie-hellman-group1-sha1");
+    assert_eq!(wait_for_exit(&mut child).code(), Some(1));
+    let _ = std::fs::remove_dir_all(&config);
+}
+
+#[test]
+fn version_names_the_build_rather_than_a_placeholder() {
+    let out = Command::new(env!("CARGO_BIN_EXE_linecon"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("linecon "), "{text}");
+    assert!(!text.contains("Unidentified"), "{text}");
+    assert!(text.contains("PuTTY "), "{text}");
 }

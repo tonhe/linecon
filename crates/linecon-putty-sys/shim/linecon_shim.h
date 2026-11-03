@@ -87,9 +87,6 @@ enum { LC_SPECIAL_BREAK = 1, LC_SPECIAL_EOF, LC_SPECIAL_PING, LC_SPECIAL_REKEY }
 
 void lc_free_string(char *s);
 
-/* Build identification, for version output and bug reports. */
-const char *lc_putty_version(void);
-
 #ifdef __cplusplus
 }
 #endif

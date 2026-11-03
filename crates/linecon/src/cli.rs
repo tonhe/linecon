@@ -62,9 +62,9 @@ pub fn run(args: Vec<String>) -> i32 {
     }
     if flags.contains(&"--version") {
         println!(
-            "linecon {} ({})",
-            env!("CARGO_PKG_VERSION"),
-            linecon_engine::putty_version()
+            "linecon {} (PuTTY {})",
+            linecon_engine::VERSION,
+            linecon_engine::PUTTY_COMMIT
         );
         return 0;
     }
@@ -384,9 +384,13 @@ fn connect(settings: &Settings, policy: &AlgorithmPolicy) -> i32 {
                 session.answer_hostkey(verdict);
             }
             Ok(Event::WeakCrypto { description }) => {
-                say(&format!("{description}\n"));
-                failure = Some(description);
-                session.answer_weak(false);
+                if negotiation::weak_is_acceptable(&description) {
+                    session.answer_weak(true);
+                } else {
+                    // Reported once, with the rest of the failure, when it closes.
+                    failure = Some(description);
+                    session.answer_weak(false);
+                }
             }
             Ok(Event::Fatal(reason)) => {
                 failure.get_or_insert(reason);
@@ -415,7 +419,11 @@ fn connect(settings: &Settings, policy: &AlgorithmPolicy) -> i32 {
                     report_failure(reason, &settings, &policy);
                 }
                 raw.restore();
-                return exit_code.unwrap_or(i32::from(reason.is_some()));
+                // PuTTY reports 0 for a connection it abandoned, so a failure has to win.
+                return match exit_code {
+                    Some(code) if code != 0 => code,
+                    _ => i32::from(reason.is_some()),
+                };
             }
             Ok(_) | Err(RecvError::Timeout) => {}
             Err(RecvError::Disconnected) => return 1,

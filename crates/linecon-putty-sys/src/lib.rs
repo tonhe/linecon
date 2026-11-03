@@ -3,6 +3,11 @@
 
 use std::ffi::{c_char, c_int, c_uchar, c_void};
 
+/// This build's version: the release tag, or the crate version plus `-dev`.
+pub const VERSION: &str = env!("LINECON_VERSION");
+/// The PuTTY commit this build was made from.
+pub const PUTTY_COMMIT: &str = env!("LINECON_PUTTY_COMMIT");
+
 pub enum lc_session {}
 
 pub const LC_EV_OUTPUT: c_int = 0;
@@ -80,5 +85,4 @@ extern "C" {
     pub fn lc_session_answer_weak(s: *mut lc_session, accept: c_int);
     pub fn lc_session_close(s: *mut lc_session);
     pub fn lc_free_string(s: *mut c_char);
-    pub fn lc_putty_version() -> *const c_char;
 }

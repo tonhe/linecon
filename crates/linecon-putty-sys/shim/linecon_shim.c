@@ -676,7 +676,12 @@ void lc_engine_stop(void)
 
 void lc_free_string(char *s) { sfree(s); }
 
-const char *lc_putty_version(void) { return sshver; }
+/*
+ * These replace PuTTY's utils/version.c, whose build placeholder would otherwise
+ * be sent to every device as our SSH version string. Devices log that string.
+ */
+const char ver[] = "linecon0 " LINECON_VERSION;
+const char sshver[] = "linecon_" LINECON_VERSION;
 
 /* ------------------------------------------- Things PuTTY expects of us -- */
 

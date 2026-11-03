@@ -21,6 +21,34 @@ fn main() {
     // dunce avoids Windows extended-length paths, which MSBuild cannot open.
     let putty = dunce::canonicalize(manifest.join("../../vendor/putty"))
         .expect("vendor/putty is missing; run: git submodule update --init --recursive");
+    // Release builds name their tag. CI sets this only when building one.
+    println!("cargo:rerun-if-env-changed=LINECON_RELEASE");
+    let version = env::var("LINECON_RELEASE")
+        .ok()
+        .filter(|r| !r.is_empty())
+        .map(|r| r.trim_start_matches('v').to_string())
+        .unwrap_or_else(|| format!("{}-dev", env::var("CARGO_PKG_VERSION").unwrap()));
+    // It goes in the SSH version string, which allows no spaces and is under 40 bytes.
+    assert!(
+        version.len() < 24 && version.chars().all(|c| c.is_ascii_graphic()),
+        "unusable version: {version}"
+    );
+    println!("cargo:rustc-env=LINECON_VERSION={version}");
+    let commit = std::process::Command::new("git")
+        .args([
+            "-C",
+            putty.to_str().unwrap(),
+            "rev-parse",
+            "--short=8",
+            "HEAD",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=LINECON_PUTTY_COMMIT={commit}");
+
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
     let windows = target_os == "windows";
 
@@ -83,7 +111,8 @@ fn main() {
         .define("SERIAL", "1")
         .define("OTHERBACKENDS", "1")
         .compile("linecon_be_list");
-    shim.file("shim/linecon_shim.c")
+    shim.define("LINECON_VERSION", format!("\"{version}\"").as_str())
+        .file("shim/linecon_shim.c")
         .file("shim/shim_storage.c")
         .file(putty.join("stubs/no-lineedit.c"))
         .compile("linecon_shim");

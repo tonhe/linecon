@@ -11,7 +11,9 @@ pub mod negotiation;
 pub mod settings;
 pub mod sftp;
 
+pub use linecon_putty_sys::{PUTTY_COMMIT, VERSION};
+
 pub use engine::{
-    putty_version, set_hostkey_store, Event, HostKeyPrompt, HostKeyVerdict, OpenError, Prompt,
-    PromptField, RecvError, Session, Special,
+    set_hostkey_store, Event, HostKeyPrompt, HostKeyVerdict, OpenError, Prompt, PromptField,
+    RecvError, Session, Special,
 };

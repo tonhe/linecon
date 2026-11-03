@@ -256,7 +256,13 @@ impl AlgorithmPolicy {
         self.allowed(&self.kex, KEX)
     }
     pub fn allowed_host_keys(&self) -> Vec<&'static str> {
-        self.allowed(&self.host_keys, HOST_KEYS)
+        let mut allowed = self.allowed(&self.host_keys, HOST_KEYS);
+        if !self.legacy {
+            // In the legacy class for PuTTY's list, but accepted anyway: see
+            // `negotiation::weak_is_acceptable`.
+            allowed.extend(["rsa-sha2-512", "rsa-sha2-256"]);
+        }
+        allowed
     }
 }
 

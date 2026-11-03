@@ -3,7 +3,7 @@
 ## Done
 - PuTTY shim and engine: SSH, Telnet, serial and raw through one event API.
 - CI builds and tests macOS arm64/x64, Linux x64/arm64 and Windows x64.
-- Latest release: v0.0.1-alpha.4, with the window, .app and every feature below.
+- Releases are listed at https://github.com/tonhe/linecon/releases, newest first.
 - Legacy test on both Linux runners against a Docker OpenSSH 6.7: group1-sha1, 3des-cbc,
   arcfour256, hmac-md5, ssh-dss, SHA-1 ssh-rsa, 1024-bit host keys and SSH-1.
 - Negotiation failures report offered versus allowed.
@@ -34,6 +34,8 @@
   `specs/011-first-real-use`.
 
 - Session export and import in a documented format, with folders and optional logins.
+
+- Tested against a real IOS XE 17.18.2 router. RSA with SHA-2 connects by default; SHA-1 ssh-rsa needs legacy.
 
 ## In progress
 - Fixes from real use on macOS.

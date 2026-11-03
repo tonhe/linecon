@@ -363,7 +363,7 @@ fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint:
                 *shared.pending.lock().unwrap() = Some(Pending::HostKey(key));
             }
             Event::WeakCrypto { description } => {
-                if spec.accept_weak {
+                if spec.accept_weak || negotiation::weak_is_acceptable(&description) {
                     session.answer_weak(true);
                 } else {
                     // Legacy is off for this session, so this is a refusal.

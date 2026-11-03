@@ -156,8 +156,8 @@ impl Auth for WindowAuth {
         }
     }
 
-    fn weak_crypto(&mut self, _description: &str) -> bool {
-        self.accept_weak
+    fn weak_crypto(&mut self, description: &str) -> bool {
+        self.accept_weak || linecon_engine::negotiation::weak_is_acceptable(description)
     }
 }
 
