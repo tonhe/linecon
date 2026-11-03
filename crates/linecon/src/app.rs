@@ -288,7 +288,8 @@ impl App {
         let resolved = id
             .and_then(|id| self.config.resolve(id))
             .unwrap_or_else(|| self.config.resolve_root());
-        self.spec_from(name, id, &resolved, resolved.engine_settings(target, user))
+        let settings = resolved.engine_settings_for(&self.config, target, user);
+        self.spec_from(name, id, &resolved, settings)
     }
 
     fn spec_from(&self, name: &str, id: Option<Id>, r: &Resolved, settings: Settings) -> PaneSpec {

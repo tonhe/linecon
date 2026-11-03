@@ -152,6 +152,34 @@ impl Resolved {
         }
     }
 
+    /// The login that applies, if the inherited id still exists.
+    pub fn identity<'a>(&self, config: &'a Config) -> Option<&'a Identity> {
+        config.identity(self.identity.value)
+    }
+
+    /// Engine settings using the identity that applies. An explicit username,
+    /// such as from quick connect, wins over the identity's.
+    pub fn engine_settings_for(
+        &self,
+        config: &Config,
+        target: &Target,
+        username: &str,
+    ) -> Settings {
+        let identity = self.identity(config);
+        let user = match identity {
+            Some(i) if username.is_empty() => i.username.as_str(),
+            _ => username,
+        };
+        let mut s = self.engine_settings(target, user);
+        if let (Some(identity), Protocol::Ssh) = (identity, target.protocol) {
+            s.set("TryAgent", i32::from(identity.use_agent));
+            if !identity.key_file.is_empty() {
+                s.set("PublicKeyFile", &identity.key_file);
+            }
+        }
+        s
+    }
+
     /// Engine settings for a session. Secrets are answered at prompt time and
     /// are not part of this.
     pub fn engine_settings(&self, target: &Target, username: &str) -> Settings {
@@ -216,6 +244,40 @@ mod tests {
             core,
             sw,
         }
+    }
+
+    #[test]
+    fn identity_is_inherited_and_reaches_the_engine() {
+        let mut t = tree();
+        let who = t.config.add_identity("ops", "netadmin");
+        let i = t.config.identity_mut(who).unwrap();
+        i.key_file = "/keys/id_rsa".into();
+        i.use_agent = true;
+        t.config.overrides_mut(t.site).unwrap().identity = Some(who);
+        let r = t.config.resolve(t.sw).unwrap();
+        assert_eq!(
+            r.identity.source,
+            Source::Folder {
+                id: t.site,
+                name: "Site".into()
+            }
+        );
+        let s = r.engine_settings_for(&t.config, &target(), "");
+        assert_eq!(s.get("UserName"), Some("netadmin"));
+        assert_eq!(s.get("PublicKeyFile"), Some("/keys/id_rsa"));
+        assert_eq!(s.get("TryAgent"), Some("1"));
+        let s = r.engine_settings_for(&t.config, &target(), "other");
+        assert_eq!(s.get("UserName"), Some("other"));
+    }
+
+    #[test]
+    fn no_identity_still_resolves() {
+        let t = tree();
+        let r = t.config.resolve(t.sw).unwrap();
+        assert!(r.identity(&t.config).is_none());
+        let s = r.engine_settings_for(&t.config, &target(), "");
+        assert_eq!(s.get("UserName"), Some(""));
+        assert_eq!(s.get("TryAgent"), None);
     }
 
     #[test]

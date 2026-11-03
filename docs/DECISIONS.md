@@ -82,3 +82,9 @@ egui's window layer turns Ctrl+C, X and V into clipboard events and swallows the
 network engineer needs those as control characters, so the view maps them back. Copy and paste
 are Ctrl+Shift+C and V, or Cmd on macOS. One known limit: Ctrl+V with an empty clipboard sends
 nothing, because egui emits no event for it.
+
+## 2026-11-03: Encrypted secret file uses Argon2id and ChaCha20-Poly1305
+
+Standard RustCrypto implementations rather than anything from PuTTY, which has no API for this.
+The header is authenticated, its cost parameters are capped so a tampered file cannot demand
+absurd memory, and a wrong passphrase looks the same as tampering. These only protect local files.

@@ -4,6 +4,7 @@
 mod model;
 mod paths;
 mod resolve;
+pub mod secrets;
 mod store;
 
 pub use model::*;

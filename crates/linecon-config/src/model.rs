@@ -146,6 +146,29 @@ impl Node {
     }
 }
 
+/// A reusable login. The saved password, if any, is in the secret store under
+/// [`Identity::secret_key`], never in this struct or the config file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Identity {
+    pub id: Id,
+    pub name: String,
+    pub username: String,
+    /// Path to a private key file.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub key_file: String,
+    /// Offer keys from a running agent (ssh-agent, Pageant, 1Password).
+    pub use_agent: bool,
+    /// True if a password has been saved for this identity.
+    pub has_password: bool,
+}
+
+impl Identity {
+    pub fn secret_key(&self) -> String {
+        format!("identity-{}", self.id)
+    }
+}
+
 /// Light or dark window chrome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -165,6 +188,8 @@ pub struct Config {
     /// Settings applied at the root, beneath every folder.
     pub settings: Overrides,
     pub next_id: Id,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub identities: Vec<Identity>,
     pub nodes: Vec<Node>,
 }
 
@@ -174,6 +199,7 @@ impl Default for Config {
             appearance: Appearance::Auto,
             settings: Overrides::default(),
             next_id: 1,
+            identities: Vec::new(),
             nodes: Vec::new(),
         }
     }
@@ -221,6 +247,54 @@ impl Config {
         };
         self.children_mut(parent)?.push(Node::Session(session));
         Some(id)
+    }
+
+    /// Adds an identity, returning its id.
+    pub fn add_identity(&mut self, name: &str, username: &str) -> Id {
+        let id = self.fresh_id();
+        self.identities.push(Identity {
+            id,
+            name: name.to_string(),
+            username: username.to_string(),
+            ..Default::default()
+        });
+        id
+    }
+
+    pub fn identity(&self, id: Id) -> Option<&Identity> {
+        self.identities.iter().find(|i| i.id == id)
+    }
+
+    pub fn identity_mut(&mut self, id: Id) -> Option<&mut Identity> {
+        self.identities.iter_mut().find(|i| i.id == id)
+    }
+
+    /// Removes an identity and every reference to it, so nothing silently
+    /// inherits a login that no longer exists.
+    pub fn remove_identity(&mut self, id: Id) -> Option<Identity> {
+        let pos = self.identities.iter().position(|i| i.id == id)?;
+        fn clear(nodes: &mut [Node], id: Id) {
+            for node in nodes {
+                match node {
+                    Node::Folder(f) => {
+                        if f.settings.identity == Some(id) {
+                            f.settings.identity = None;
+                        }
+                        clear(&mut f.children, id);
+                    }
+                    Node::Session(s) => {
+                        if s.settings.identity == Some(id) {
+                            s.settings.identity = None;
+                        }
+                    }
+                }
+            }
+        }
+        if self.settings.identity == Some(id) {
+            self.settings.identity = None;
+        }
+        clear(&mut self.nodes, id);
+        Some(self.identities.remove(pos))
     }
 
     pub fn find(&self, id: Id) -> Option<&Node> {
@@ -359,6 +433,23 @@ mod tests {
             host: "sw1".into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn removing_an_identity_clears_references() {
+        let mut c = Config::default();
+        let who = c.add_identity("ops", "admin");
+        let site = c.add_folder(None, "site").unwrap();
+        let sw = c.add_session(Some(site), "sw1", target()).unwrap();
+        c.settings.identity = Some(who);
+        c.overrides_mut(site).unwrap().identity = Some(who);
+        c.overrides_mut(sw).unwrap().identity = Some(who);
+        assert_eq!(c.identity(who).unwrap().username, "admin");
+        c.remove_identity(who);
+        assert_eq!(c.settings.identity, None);
+        assert_eq!(c.overrides_mut(site).unwrap().identity, None);
+        assert_eq!(c.overrides_mut(sw).unwrap().identity, None);
+        assert!(c.remove_identity(who).is_none());
     }
 
     #[test]
