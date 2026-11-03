@@ -84,6 +84,11 @@ impl ConfigLocation {
         self.dir.join("secrets.bin")
     }
 
+    /// Where a running window tells `linecon mcp` how to reach it.
+    pub fn mcp_rendezvous_file(&self) -> PathBuf {
+        self.dir.join("mcp.token")
+    }
+
     pub fn themes_dir(&self) -> PathBuf {
         self.dir.join("themes")
     }

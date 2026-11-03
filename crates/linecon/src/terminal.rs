@@ -130,6 +130,22 @@ impl TermCore {
         self.term.scroll_display(scroll);
     }
 
+    /// The screen as text, preceded by up to `scrollback` lines of history.
+    pub fn text_with_scrollback(&self, scrollback: usize) -> String {
+        use alacritty_terminal::index::{Column, Line};
+        let grid = self.term.grid();
+        let history = grid.history_size().min(scrollback) as i32;
+        let mut out = String::new();
+        for row in -history..self.size.rows as i32 {
+            let line = &grid[Line(row)];
+            let text: String = (0..self.size.cols).map(|c| line[Column(c)].c).collect();
+            out.push_str(text.trim_end());
+            out.push('\n');
+        }
+        out.truncate(out.trim_end_matches('\n').len());
+        out
+    }
+
     /// The visible text, one string per row. Used by tests and search display.
     #[cfg(test)]
     pub fn visible_lines(&self) -> Vec<String> {
@@ -151,6 +167,26 @@ mod tests {
 
     fn core() -> TermCore {
         TermCore::new(TermSize { cols: 20, rows: 4 }, 1000)
+    }
+
+    #[test]
+    fn text_includes_only_the_scrollback_asked_for() {
+        let mut t = core();
+        for i in 0..20 {
+            t.feed(format!("line {i}\r\n").as_bytes());
+        }
+        let screen = t.text_with_scrollback(0);
+        assert!(
+            screen.contains("line 19") && !screen.contains("line 10"),
+            "{screen}"
+        );
+        let more = t.text_with_scrollback(5);
+        assert!(
+            more.contains("line 12") && !more.contains("line 10\n"),
+            "{more}"
+        );
+        // Asking for more than exists is fine.
+        assert!(t.text_with_scrollback(9999).contains("line 0"));
     }
 
     #[test]

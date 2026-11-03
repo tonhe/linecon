@@ -129,3 +129,10 @@ PuTTY's sftp.c waits for replies by pumping the event loop inside its receive ca
 shared engine thread would freeze every other session. A helper process would avoid that at the cost of a
 second copy of the engine per transfer. Instead PuTTY opens the `sftp` subsystem and carries everything
 SSH, and a small codec handles SFTP v3 requests. That is a file protocol above SSH, so constraint 1 holds.
+
+## 2026-11-03: Agent access is opt-in at every level
+
+The brief lists an MCP server so an agent can drive open sessions. These are live sessions on network gear, and
+text from a device can try to instruct an agent, so the server is off by default, grants are per pane and never
+saved, and the tools for opening connections or reading secrets do not exist. The window re-checks access when it
+applies queued input, so withdrawing a grant wins over anything in flight.

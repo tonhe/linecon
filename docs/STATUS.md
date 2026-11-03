@@ -26,11 +26,13 @@
 
 - SFTP file browser on request (Ctrl+Shift+S): list, download, upload by drop, mkdir, rename, delete.
 
+- MCP server: off by default, loopback with a token, per-pane read or control that is never saved.
+
 ## In progress
-- Next: MCP server, so an agent can drive open sessions.
+- Next: snippet sharing, then the analyze step again.
 
 ## Next
-- MCP server, snippet sharing.
+- Snippet sharing.
 
 ## Blocked
 - Nothing.
@@ -45,5 +47,6 @@
   logged-in desktop session.
 - Pageant and the 1Password agent are untested. A remote forward has no automated test.
 - Importers are tested against samples written from the formats, not exports from real installs.
+- MCP is tested with its own client code and has not been run against a real MCP client.
 - Saved passwords are not used through a jump host, because the prompt may be the jump host's.
 - macOS builds are not notarized, so Gatekeeper blocks them until allowed by hand.

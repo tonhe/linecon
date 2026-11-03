@@ -24,6 +24,7 @@ use linecon_engine::HostKeyVerdict;
 use zeroize::Zeroizing;
 
 use crate::keys;
+use crate::mcp::{Access, Host, McpServer, PaneInfo};
 use crate::pane::{Pane, PaneSpec, Pending, Repaint, Status};
 use crate::sftp_pane::{Question, SftpPane};
 use crate::style::{self, Chrome};
@@ -103,6 +104,8 @@ struct PaneEntry {
     answers: Vec<String>,
     /// The file browser, when opened for this pane.
     sftp: Option<SftpPane>,
+    /// What an agent may do here. Starts at none and is never saved.
+    agent: Access,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -128,6 +131,8 @@ enum Command {
     SetAppearance(Appearance),
     RunSnippet(String),
     ToggleFiles,
+    ToggleAgentServer,
+    SetAgentAccess(Access),
     ImportSshConfig,
     #[cfg(windows)]
     ImportRegistry {
@@ -147,6 +152,8 @@ pub struct App {
     location: ConfigLocation,
     config_error: Option<String>,
     vault: Arc<Mutex<Vault>>,
+    agent_view: Arc<AgentView>,
+    agent_server: Option<McpServer>,
     /// Passphrase being typed, with the session to open once it is settled.
     unlock: Option<Unlock>,
     /// Passwords being typed into identity forms, by identity.
@@ -260,6 +267,8 @@ impl App {
             repaint: None,
             selected_node: None,
             vault,
+            agent_view: Arc::default(),
+            agent_server: None,
             unlock: None,
             password_drafts: HashMap::new(),
         }
@@ -361,6 +370,7 @@ impl App {
             broadcast: false,
             answers: Vec::new(),
             sftp: None,
+            agent: Access::None,
         };
         self.panes.insert(id, entry);
         id
@@ -488,6 +498,15 @@ impl App {
             Command::Open(id) => self.open_saved(id),
             Command::RunSnippet(text) => self.run_snippet(&text),
             Command::ToggleFiles => self.toggle_files(),
+            Command::ToggleAgentServer => {
+                self.config.mcp_enabled = !self.config.mcp_enabled;
+                self.dirty = true;
+            }
+            Command::SetAgentAccess(access) => {
+                if let Some(entry) = focused.and_then(|id| self.panes.get_mut(&id)) {
+                    entry.agent = access;
+                }
+            }
             Command::ImportSshConfig => {
                 let path =
                     directories::BaseDirs::new().map(|d| d.home_dir().join(".ssh").join("config"));
@@ -505,6 +524,52 @@ impl App {
                 match linecon_config::import::read_windows_registry(kitty) {
                     Ok(result) => self.finish_import(result),
                     Err(e) => self.error = Some(e),
+                }
+            }
+        }
+    }
+
+    /// Starts or stops the agent server, and shares the current panes with it.
+    fn sync_agent_server(&mut self, ctx: &egui::Context) {
+        if !self.config.mcp_enabled {
+            self.agent_server = None;
+            self.agent_view.update(Vec::new());
+            return;
+        }
+        if self.agent_server.is_none() {
+            let repaint_ctx = ctx.clone();
+            *self.agent_view.wake.lock().unwrap() =
+                Some(Box::new(move || repaint_ctx.request_repaint()));
+            let host: Arc<dyn Host> = self.agent_view.clone();
+            match McpServer::start(&self.location.mcp_rendezvous_file(), host) {
+                Ok(server) => self.agent_server = Some(server),
+                Err(e) => {
+                    self.error = Some(format!("Could not start agent access: {e}"));
+                    self.config.mcp_enabled = false;
+                    return;
+                }
+            }
+        }
+        let panes = self
+            .panes
+            .iter()
+            .map(|(id, entry)| AgentPane {
+                info: PaneInfo {
+                    id: *id,
+                    name: entry.pane.spec.name.clone(),
+                    access: entry.agent,
+                    connected: entry.pane.status() == Status::Live,
+                    waiting_for_user: entry.pane.shared.pending.lock().unwrap().is_some(),
+                },
+                shared: entry.pane.shared.clone(),
+            })
+            .collect();
+        self.agent_view.update(panes);
+        for (id, data) in self.agent_view.take_input() {
+            // Checked again here: access may have been withdrawn since it was queued.
+            if let Some(entry) = self.panes.get(&id).filter(|e| e.agent == Access::Control) {
+                if entry.pane.shared.pending.lock().unwrap().is_none() {
+                    entry.pane.send(&data);
                 }
             }
         }
@@ -727,6 +792,7 @@ impl App {
             }
         }
 
+        self.sync_agent_server(&ctx);
         self.palette_overlay(&ctx, &chrome);
         self.paste_overlay(&ctx, &chrome);
         self.unlock_overlay(&ctx, &chrome);
@@ -928,6 +994,26 @@ impl App {
             .tabs
             .get(self.active_tab)
             .is_some_and(|t| matches!(t.layout, Layout::Split { .. }));
+        let agent = self.panes.get(&id).map_or(Access::None, |e| e.agent);
+        if agent != Access::None {
+            let (text, color) = match agent {
+                Access::Control => ("agent can type here", chrome.warning),
+                _ => ("agent can read this", chrome.accent),
+            };
+            ui.painter().rect_stroke(
+                rect,
+                CornerRadius::ZERO,
+                Stroke::new(2.0, color),
+                StrokeKind::Inside,
+            );
+            ui.painter().text(
+                rect.right_bottom() - vec2(10.0, 8.0),
+                Align2::RIGHT_BOTTOM,
+                text,
+                FontId::proportional(12.0),
+                color,
+            );
+        }
         if broadcasting {
             ui.painter().rect_stroke(
                 rect,
@@ -1429,6 +1515,29 @@ impl App {
         add("Reconnect", "Ctrl+Shift+R", Command::Reconnect);
         add("Send break", "console", Command::SendBreak);
         add("File browser (SFTP)", "Ctrl+Shift+S", Command::ToggleFiles);
+        let server = if self.config.mcp_enabled {
+            "Agent access: stop the server"
+        } else {
+            "Agent access: start the server"
+        };
+        add(server, "MCP, off by default", Command::ToggleAgentServer);
+        if self.config.mcp_enabled {
+            add(
+                "Agent access for this pane: none",
+                "",
+                Command::SetAgentAccess(Access::None),
+            );
+            add(
+                "Agent access for this pane: read",
+                "",
+                Command::SetAgentAccess(Access::Read),
+            );
+            add(
+                "Agent access for this pane: control",
+                "can type commands",
+                Command::SetAgentAccess(Access::Control),
+            );
+        }
         add(
             "Toggle broadcast for this pane",
             "",
@@ -2430,6 +2539,55 @@ fn target_editor(ui: &mut Ui, name: &mut String, target: &mut Target, chrome: &C
     changed
 }
 
+struct AgentPane {
+    info: PaneInfo,
+    shared: Arc<crate::pane::PaneShared>,
+}
+
+/// What the agent server sees of the window: a copy refreshed each frame, plus a
+/// queue of input the window applies itself after checking access once more.
+#[derive(Default)]
+struct AgentView {
+    panes: Mutex<Vec<AgentPane>>,
+    input: Mutex<Vec<(u64, Vec<u8>)>>,
+    wake: Mutex<Option<Box<dyn Fn() + Send>>>,
+}
+
+impl AgentView {
+    fn update(&self, panes: Vec<AgentPane>) {
+        *self.panes.lock().unwrap() = panes;
+    }
+
+    fn take_input(&self) -> Vec<(u64, Vec<u8>)> {
+        std::mem::take(&mut *self.input.lock().unwrap())
+    }
+}
+
+impl Host for AgentView {
+    fn panes(&self) -> Vec<PaneInfo> {
+        self.panes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|p| p.info.clone())
+            .collect()
+    }
+
+    fn read_screen(&self, id: u64, scrollback: usize) -> Option<String> {
+        let panes = self.panes.lock().unwrap();
+        let pane = panes.iter().find(|p| p.info.id == id)?;
+        let core = pane.shared.core.lock().unwrap();
+        Some(core.text_with_scrollback(scrollback))
+    }
+
+    fn queue_input(&self, id: u64, data: Vec<u8>) {
+        self.input.lock().unwrap().push((id, data));
+        if let Some(wake) = self.wake.lock().unwrap().as_ref() {
+            wake();
+        }
+    }
+}
+
 fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
     if bytes < 1024 {
@@ -3244,6 +3402,15 @@ impl App {
     pub fn demo_files(&mut self, sftp: SftpPane) {
         let id = self.focused_pane().unwrap();
         self.panes.get_mut(&id).unwrap().sftp = Some(sftp);
+    }
+
+    pub fn set_focused_agent_access(&mut self, access: Access) {
+        let id = self.focused_pane().unwrap();
+        self.panes.get_mut(&id).unwrap().agent = access;
+    }
+
+    pub fn agent_host(&self) -> Arc<dyn Host> {
+        self.agent_view.clone()
     }
 
     pub fn tab_count(&self) -> usize {

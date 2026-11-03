@@ -25,6 +25,7 @@ usage:
   linecon raw <host> <port>
   linecon serial <line> <baud>
   linecon probe <host> [port]
+  linecon mcp                     stdio bridge for an MCP client
 
 At the start of a line, ~. disconnects, ~b sends a break and ~~ types a tilde.
 ";
@@ -45,6 +46,16 @@ pub fn run(args: Vec<String>) -> i32 {
         .filter(|a| !a.starts_with("--"))
         .map(String::as_str)
         .collect();
+    if words.as_slice() == ["mcp"] {
+        let path = ConfigLocation::detect().mcp_rendezvous_file();
+        return match crate::mcp::bridge(&path, std::io::stdin(), std::io::stdout()) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+    }
     if flags.contains(&"--help") {
         print!("{USAGE}");
         return 0;

@@ -196,6 +196,9 @@ pub enum Appearance {
 #[serde(default)]
 pub struct Config {
     pub appearance: Appearance,
+    /// Whether the agent server runs. Per-pane access is never saved.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub mcp_enabled: bool,
     /// Settings applied at the root, beneath every folder.
     pub settings: Overrides,
     pub next_id: Id,
@@ -211,6 +214,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             appearance: Appearance::Auto,
+            mcp_enabled: false,
             settings: Overrides::default(),
             next_id: 1,
             identities: Vec::new(),

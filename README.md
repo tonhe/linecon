@@ -57,6 +57,19 @@ keeps config, known hosts and logs in a `linecon-data` folder beside it.
 
 Drop an iTerm2 `.itermcolors` or Windows Terminal `.json` scheme on the window to import it.
 
+## Agent access
+
+linecon0 can act as an [MCP](https://modelcontextprotocol.io) server so an AI agent can work in sessions you
+choose. These are live sessions on real equipment, and output from a device could contain text that tries to
+instruct the agent, so everything is opt-in:
+
+- The server is off until you start it from the command palette.
+- Each pane starts with no access. You grant read or control one pane at a time, and it is never saved.
+- A pane with access is marked on screen, and input is refused while it is waiting on a password.
+- Agents cannot open connections, read saved passwords or change settings.
+
+Point your MCP client at the command `linecon mcp`.
+
 ## Build
 
     git clone --recursive https://github.com/tonhe/linecon

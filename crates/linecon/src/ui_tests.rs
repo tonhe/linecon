@@ -890,3 +890,73 @@ fn file_browser_moves_files_against_the_legacy_server() {
     assert!(!pane.would_overwrite(&local));
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// Access set in the window is what the agent server enforces, and it is off
+/// until granted.
+#[test]
+fn agent_access_is_off_until_granted_pane_by_pane() {
+    use crate::mcp::{handle, Access};
+    use serde_json::json;
+    let mut s = sample();
+    assert!(
+        !s.app.config.mcp_enabled,
+        "the server must be off by default"
+    );
+    s.app
+        .add_demo_tab("core-sw1", Some(s.core_sw), SHOW_VERSION);
+    let host = s.app.agent_host();
+    let mut h = harness(s.app);
+    h.run_steps(2);
+    let call = |host: &dyn crate::mcp::Host, name: &str, arguments: serde_json::Value| {
+        handle(
+            host,
+            &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": name, "arguments": arguments } }),
+        )
+        .unwrap()["result"]
+            .clone()
+    };
+    // Off: nothing is shared with the server at all.
+    assert_eq!(
+        call(host.as_ref(), "list_sessions", json!({}))["content"][0]["text"],
+        "[]"
+    );
+
+    h.state_mut().config.mcp_enabled = true;
+    h.run_steps(2);
+    // On, but this pane has not been granted.
+    assert_eq!(
+        call(host.as_ref(), "list_sessions", json!({}))["content"][0]["text"],
+        "[]"
+    );
+
+    h.state_mut().set_focused_agent_access(Access::Read);
+    h.run_steps(2);
+    let listed = call(host.as_ref(), "list_sessions", json!({}));
+    let text = listed["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("core-sw1") && text.contains("read"), "{text}");
+    let id = serde_json::from_str::<serde_json::Value>(text).unwrap()[0]["session"]
+        .as_u64()
+        .unwrap();
+    let screen = call(host.as_ref(), "read_screen", json!({ "session": id }));
+    assert!(screen["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("show version"));
+    screenshot(&mut h, "agent");
+
+    // Withdrawing access takes effect, and stopping the server clears everything.
+    h.state_mut().set_focused_agent_access(Access::None);
+    h.run_steps(2);
+    assert_eq!(
+        call(host.as_ref(), "list_sessions", json!({}))["content"][0]["text"],
+        "[]"
+    );
+    h.state_mut().set_focused_agent_access(Access::Control);
+    h.state_mut().config.mcp_enabled = false;
+    h.run_steps(2);
+    assert_eq!(
+        call(host.as_ref(), "list_sessions", json!({}))["content"][0]["text"],
+        "[]"
+    );
+}

@@ -9,6 +9,7 @@
 mod app;
 mod cli;
 mod keys;
+mod mcp;
 mod pane;
 mod serial_ports;
 mod session_log;
