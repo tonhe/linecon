@@ -259,7 +259,17 @@ impl SecretStore for OsStore {
 pub struct Vault {
     file: PathBuf,
     store: Option<Box<dyn SecretStore>>,
+    /// Where secrets go, in words for the settings panel.
+    location: &'static str,
 }
+
+const OS_STORE_NAME: &str = if cfg!(target_os = "macos") {
+    "macOS Keychain"
+} else if cfg!(windows) {
+    "Windows Credential Manager"
+} else {
+    "the system keyring"
+};
 
 impl Vault {
     /// Uses the OS store unless portable mode or its absence says otherwise.
@@ -271,7 +281,16 @@ impl Vault {
                 .ok()
                 .map(|s| Box::new(s) as Box<dyn SecretStore>)
         };
-        Self { file, store }
+        let location = if store.is_some() {
+            OS_STORE_NAME
+        } else {
+            "an encrypted file"
+        };
+        Self {
+            file,
+            store,
+            location,
+        }
     }
 
     /// A vault over a given store, with nothing to unlock.
@@ -279,7 +298,13 @@ impl Vault {
         Self {
             file: PathBuf::new(),
             store: Some(store),
+            location: "memory",
         }
+    }
+
+    /// Where saved passwords are kept, for telling the user.
+    pub fn location(&self) -> &'static str {
+        self.location
     }
 
     pub fn is_locked(&self) -> bool {
@@ -325,6 +350,7 @@ mod tests {
         let path = temp_path("vault");
         let mut vault = Vault::new(true, path.clone());
         assert!(vault.is_locked() && vault.is_new());
+        assert_eq!(vault.location(), "an encrypted file");
         assert!(vault.get("k").is_none());
         assert!(vault.set("k", "v").is_err());
         vault.unlock("pass").unwrap();

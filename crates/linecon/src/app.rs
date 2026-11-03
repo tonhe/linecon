@@ -2543,7 +2543,8 @@ impl App {
             let mut forget = false;
             if identity.has_password {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Saved").color(chrome.success));
+                    let location = self.vault.lock().unwrap().location();
+                    ui.label(RichText::new(format!("Saved in {location}")).color(chrome.success));
                     forget = ui.button("Forget").clicked();
                 });
             } else {
