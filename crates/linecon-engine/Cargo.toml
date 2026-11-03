@@ -8,3 +8,6 @@ repository.workspace = true
 
 [dependencies]
 linecon-putty-sys = { path = "../linecon-putty-sys" }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

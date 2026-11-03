@@ -11,5 +11,5 @@
 - [X] T009 Command-line harness binary
 - [X] T010 CI matrix on all five targets
 - [X] T011 CI green on all five targets
-- [ ] T012 Serial test over a pseudo-terminal
+- [X] T012 Serial test over a pseudo-terminal
 - [X] T013 Tagged release publishes five executables

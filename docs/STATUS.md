@@ -25,6 +25,5 @@
   desktop on any platform; this machine has no display. Please try a build and report back.
 - Windows and macOS do not run the Docker legacy test, because hosted runners lack a Linux
   container runtime. They run the loopback tests, and the protocol code is shared.
-- Serial has no automated test yet (task T012 in feature 001).
 - Jump hosts are wired to PuTTY's SSH proxy but not yet tested end to end.
 - Ctrl+V with an empty clipboard sends nothing.

@@ -1415,6 +1415,7 @@ dependencies = [
 name = "linecon-engine"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "linecon-putty-sys",
 ]
 
