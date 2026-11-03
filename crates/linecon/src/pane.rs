@@ -12,6 +12,8 @@ use linecon_engine::negotiation::{self, NegotiationFailure};
 use linecon_engine::settings::Settings;
 use linecon_engine::{Event, HostKeyPrompt, HostKeyVerdict, Prompt, RecvError, Session, Special};
 
+use zeroize::Zeroizing;
+
 use crate::session_log::SessionLog;
 use crate::terminal::{TermCore, TermSize};
 
@@ -31,6 +33,23 @@ pub struct PaneSpec {
     pub auto_reconnect: bool,
     /// Accept weak algorithms without asking. True when the legacy toggle is on.
     pub accept_weak: bool,
+    /// Fetches the saved password when the device asks for one. Held as a lookup
+    /// so the secret spends as little time in memory as possible.
+    pub password: Option<PasswordLookup>,
+}
+
+pub type PasswordLookup = Arc<dyn Fn() -> Option<Zeroizing<String>> + Send + Sync>;
+
+/// Whether to answer this prompt with the saved password. Only once per
+/// connection, so a wrong password falls back to the user instead of locking the
+/// account. Never through a jump host, because the prompt could be the jump
+/// host's own and the password would go to the wrong machine.
+pub fn should_auto_answer(prompt: &Prompt, already_tried: bool, through_proxy: bool) -> bool {
+    !already_tried
+        && !through_proxy
+        && prompt.fields.len() == 1
+        && !prompt.fields[0].echo
+        && prompt.fields[0].text.to_lowercase().contains("password")
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -258,6 +277,7 @@ fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint:
         });
     let mut weak_reason = None;
     let mut sent_started = false;
+    let mut tried_password = false;
     while !shared.stop.load(Ordering::SeqCst) {
         let event = match session.recv_timeout(Duration::from_millis(100)) {
             Ok(event) => event,
@@ -291,7 +311,18 @@ fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint:
                 shared.local_echo.store(echo, Ordering::Relaxed);
             }
             Event::Prompt(prompt) => {
-                *shared.pending.lock().unwrap() = Some(Pending::Prompt(prompt));
+                let through_proxy = spec.settings.get("ProxyHost").is_some();
+                let saved = spec
+                    .password
+                    .as_ref()
+                    .filter(|_| should_auto_answer(&prompt, tried_password, through_proxy))
+                    .and_then(|lookup| lookup());
+                if let Some(password) = saved {
+                    tried_password = true;
+                    session.answer_prompt(&[password.as_str()]);
+                } else {
+                    *shared.pending.lock().unwrap() = Some(Pending::Prompt(prompt));
+                }
             }
             Event::HostKey(key) => {
                 *shared.pending.lock().unwrap() = Some(Pending::HostKey(key));
@@ -334,5 +365,53 @@ fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint:
             }
         }
         repaint();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use linecon_engine::PromptField;
+
+    fn prompt(text: &str, echo: bool) -> Prompt {
+        Prompt {
+            name: None,
+            instruction: None,
+            from_server: false,
+            fields: vec![PromptField {
+                text: text.to_string(),
+                echo,
+            }],
+        }
+    }
+
+    #[test]
+    fn answers_only_a_first_hidden_password_prompt() {
+        let password = prompt("admin@sw1's password: ", false);
+        assert!(should_auto_answer(&password, false, false));
+        assert!(should_auto_answer(
+            &prompt("Password: ", false),
+            false,
+            false
+        ));
+        // A rejected password goes to the user rather than being retried.
+        assert!(!should_auto_answer(&password, true, false));
+        // A jump host's prompt must not get the target's password.
+        assert!(!should_auto_answer(&password, false, true));
+        assert!(!should_auto_answer(
+            &prompt("login as: ", true),
+            false,
+            false
+        ));
+        assert!(!should_auto_answer(
+            &prompt("Passphrase for key: ", false),
+            false,
+            false
+        ));
+        assert!(!should_auto_answer(
+            &prompt("Verification code: ", false),
+            false,
+            false
+        ));
     }
 }

@@ -211,9 +211,148 @@ impl SecretStore for EncryptedFile {
     }
 }
 
+const OS_SERVICE: &str = "linecon0";
+
+/// The operating system's store: Keychain on macOS, Credential Manager on Windows
+/// (protected by DPAPI), and secret-service on Linux.
+#[derive(Default)]
+pub struct OsStore;
+
+impl OsStore {
+    /// Returns the store if it answers. A desktop with no secret-service daemon,
+    /// such as a server or a minimal window manager, does not.
+    pub fn probe() -> Result<Self, SecretError> {
+        let store = Self;
+        store.get("linecon-probe")?;
+        Ok(store)
+    }
+
+    fn entry(key: &str) -> Result<keyring::Entry, SecretError> {
+        keyring::Entry::new(OS_SERVICE, key).map_err(|e| SecretError::Unavailable(e.to_string()))
+    }
+}
+
+impl SecretStore for OsStore {
+    fn get(&self, key: &str) -> Result<Option<Zeroizing<String>>, SecretError> {
+        match Self::entry(key)?.get_password() {
+            Ok(value) => Ok(Some(Zeroizing::new(value))),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(SecretError::Unavailable(e.to_string())),
+        }
+    }
+
+    fn set(&mut self, key: &str, value: &str) -> Result<(), SecretError> {
+        Self::entry(key)?
+            .set_password(value)
+            .map_err(|e| SecretError::Unavailable(e.to_string()))
+    }
+
+    fn remove(&mut self, key: &str) -> Result<(), SecretError> {
+        match Self::entry(key)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(SecretError::Unavailable(e.to_string())),
+        }
+    }
+}
+
+/// The secret store for this run, which may need unlocking before first use.
+pub struct Vault {
+    file: PathBuf,
+    store: Option<Box<dyn SecretStore>>,
+}
+
+impl Vault {
+    /// Uses the OS store unless portable mode or its absence says otherwise.
+    pub fn new(portable: bool, file: PathBuf) -> Self {
+        let store: Option<Box<dyn SecretStore>> = if portable {
+            None
+        } else {
+            OsStore::probe()
+                .ok()
+                .map(|s| Box::new(s) as Box<dyn SecretStore>)
+        };
+        Self { file, store }
+    }
+
+    /// A vault over a given store, with nothing to unlock.
+    pub fn with_store(store: Box<dyn SecretStore>) -> Self {
+        Self {
+            file: PathBuf::new(),
+            store: Some(store),
+        }
+    }
+
+    pub fn is_locked(&self) -> bool {
+        self.store.is_none()
+    }
+
+    /// True if unlocking will create a new file, so the passphrase is being chosen.
+    pub fn is_new(&self) -> bool {
+        !self.file.exists()
+    }
+
+    pub fn unlock(&mut self, passphrase: &str) -> Result<(), SecretError> {
+        self.store = Some(Box::new(EncryptedFile::open(&self.file, passphrase)?));
+        Ok(())
+    }
+
+    /// Nothing is found while locked, so the caller falls back to asking.
+    pub fn get(&self, key: &str) -> Option<Zeroizing<String>> {
+        self.store.as_ref()?.get(key).ok().flatten()
+    }
+
+    pub fn set(&mut self, key: &str, value: &str) -> Result<(), SecretError> {
+        match &mut self.store {
+            Some(store) => store.set(key, value),
+            None => Err(SecretError::Unavailable("locked".to_string())),
+        }
+    }
+
+    pub fn remove(&mut self, key: &str) -> Result<(), SecretError> {
+        match &mut self.store {
+            Some(store) => store.remove(key),
+            None => Err(SecretError::Unavailable("locked".to_string())),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portable_vault_starts_locked_and_unlocks() {
+        let path = temp_path("vault");
+        let mut vault = Vault::new(true, path.clone());
+        assert!(vault.is_locked() && vault.is_new());
+        assert!(vault.get("k").is_none());
+        assert!(vault.set("k", "v").is_err());
+        vault.unlock("pass").unwrap();
+        vault.set("k", "v").unwrap();
+        assert_eq!(vault.get("k").unwrap().as_str(), "v");
+        let mut again = Vault::new(true, path);
+        assert!(!again.is_new());
+        assert!(matches!(
+            again.unlock("nope"),
+            Err(SecretError::BadPassphrase)
+        ));
+        assert!(again.is_locked());
+    }
+
+    /// The Windows store works on a hosted runner. The others need a logged-in
+    /// desktop session, so they are exercised by hand.
+    #[cfg(windows)]
+    #[test]
+    fn os_store_round_trips() {
+        let mut store = OsStore::probe().unwrap();
+        let key = format!("linecon-test-{}", std::process::id());
+        assert!(store.get(&key).unwrap().is_none());
+        store.set(&key, "hunter2").unwrap();
+        assert_eq!(store.get(&key).unwrap().unwrap().as_str(), "hunter2");
+        store.remove(&key).unwrap();
+        store.remove(&key).unwrap();
+        assert!(store.get(&key).unwrap().is_none());
+    }
 
     const FAST: Cost = Cost {
         memory_kib: 1024,

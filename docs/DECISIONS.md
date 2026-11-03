@@ -97,3 +97,15 @@ the same single binary, so constraint 2 holds. Linux and macOS archives preserve
 The bundle is ad-hoc signed only. Notarization needs a paid Apple Developer account, so Gatekeeper
 still blocks a downloaded copy until the user allows it. In portable mode the marker and data sit
 beside the .app, because writing inside a signed bundle would break it.
+
+## 2026-11-03: Windows secrets use Credential Manager
+
+The brief says DPAPI. Credential Manager encrypts with DPAPI and is the supported interface to it,
+and the same library covers Keychain and secret-service. On Linux it talks D-Bus in pure Rust,
+because linking libdbus would add a runtime dependency to the portable binary.
+
+## 2026-11-03: Saved passwords answer once and skip jump hosts
+
+A wrong saved password could otherwise lock an account by retrying, so the second prompt goes to the
+user. With a jump host configured the prompt may belong to the jump host, and answering would send
+the target's password to the wrong machine, so saved passwords stay out of that path for now.

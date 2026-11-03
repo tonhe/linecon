@@ -2,7 +2,7 @@
 //! appear when asked for. By default it is a terminal and a sidebar.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use alacritty_terminal::index::Point;
@@ -10,6 +10,7 @@ use egui::{
     pos2, vec2, Align, Align2, Color32, CornerRadius, FontId, Frame, Key, Layout as UiLayout,
     Margin, Modifiers, Panel, Rect, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui, UiBuilder,
 };
+use linecon_config::secrets::Vault;
 use linecon_config::{
     Appearance, Config, ConfigLocation, FlowControl, Id, Inherited, Node, Overrides, Parity,
     Protocol, Resolved, Source, Target,
@@ -18,6 +19,8 @@ use linecon_engine::algorithms::{AlgorithmClass, CIPHERS, HOST_KEYS, KEX};
 use linecon_engine::negotiation::NegotiationFailure;
 use linecon_engine::settings::Settings;
 use linecon_engine::HostKeyVerdict;
+
+use zeroize::Zeroizing;
 
 use crate::keys;
 use crate::pane::{Pane, PaneSpec, Pending, Repaint, Status};
@@ -132,6 +135,11 @@ pub struct App {
     pub config: Config,
     location: ConfigLocation,
     config_error: Option<String>,
+    vault: Arc<Mutex<Vault>>,
+    /// Passphrase being typed, with the session to open once it is settled.
+    unlock: Option<Unlock>,
+    /// Passwords being typed into identity forms, by identity.
+    password_drafts: HashMap<Id, Zeroizing<String>>,
     notice: Option<String>,
     tabs: Vec<Tab>,
     active_tab: usize,
@@ -211,6 +219,10 @@ impl App {
         {
             linecon_engine::set_hostkey_store(Arc::new(store));
         }
+        let vault = Arc::new(Mutex::new(Vault::new(
+            location.mode == linecon_config::Mode::Portable,
+            location.secrets_file(),
+        )));
         let mut themes = themes::builtin();
         themes.extend(themes::load_dir(&location.themes_dir()));
         Self {
@@ -234,6 +246,9 @@ impl App {
             dirty: false,
             repaint: None,
             selected_node: None,
+            vault,
+            unlock: None,
+            password_drafts: HashMap::new(),
         }
     }
 
@@ -310,6 +325,16 @@ impl App {
             copy_on_select: r.copy_on_select.value,
             auto_reconnect: r.auto_reconnect.value,
             accept_weak: r.legacy_algorithms.value,
+            password: r
+                .identity(&self.config)
+                .filter(|i| i.has_password)
+                .map(|identity| {
+                    let vault = self.vault.clone();
+                    let key = identity.secret_key();
+                    let lookup: crate::pane::PasswordLookup =
+                        Arc::new(move || vault.lock().unwrap().get(&key));
+                    lookup
+                }),
         }
     }
 
@@ -338,6 +363,20 @@ impl App {
     }
 
     fn open_saved(&mut self, id: Id) {
+        // A saved password needs the vault open first; asking now beats failing
+        // over to a password prompt the user thought they had dealt with.
+        let needs_vault = self
+            .config
+            .resolve(id)
+            .and_then(|r| r.identity(&self.config).map(|i| i.has_password))
+            .unwrap_or(false);
+        if needs_vault && self.vault.lock().unwrap().is_locked() {
+            self.unlock = Some(Unlock {
+                then_open: Some(id),
+                ..Default::default()
+            });
+            return;
+        }
         if let Some(session) = self.config.session(id).cloned() {
             let spec = self.spec_for(&session.name, Some(id), &session.target, "");
             self.open_in_new_tab(spec);
@@ -582,6 +621,7 @@ impl App {
 
         self.palette_overlay(&ctx, &chrome);
         self.paste_overlay(&ctx, &chrome);
+        self.unlock_overlay(&ctx, &chrome);
         self.save_if_needed();
     }
 
@@ -706,7 +746,8 @@ impl App {
             .map(|r| r.font_size.value)
             .unwrap_or(self.config.resolve_root().font_size.value) as f32;
         let is_focused_pane = self.focused_pane() == Some(id);
-        let overlay_open = self.palette.is_some() || self.paste_confirm.is_some();
+        let overlay_open =
+            self.palette.is_some() || self.paste_confirm.is_some() || self.unlock.is_some();
         let has_pending = entry.pane.shared.pending.lock().unwrap().is_some();
         let focused =
             is_focused_pane && !overlay_open && !has_pending && !self.other_widget_has_focus(&ctx);
@@ -1386,6 +1427,173 @@ impl App {
         }
     }
 
+    fn unlock_overlay(&mut self, ctx: &egui::Context, chrome: &Chrome) {
+        let Some(mut unlock) = self.unlock.take() else {
+            return;
+        };
+        let is_new = self.vault.lock().unwrap().is_new();
+        let mut submit = false;
+        let mut cancel = false;
+        let screen = ctx.content_rect();
+        egui::Area::new(egui::Id::unique("linecon-unlock"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos2(screen.center().x - 200.0, screen.top() + 90.0))
+            .show(ctx, |ui| {
+                Frame::popup(ui.style()).fill(chrome.raised).inner_margin(Margin::same(14)).show(ui, |ui| {
+                    ui.set_width(380.0);
+                    let heading = if is_new { "Choose a passphrase" } else { "Unlock saved passwords" };
+                    let label = ui.label(RichText::new(heading).size(15.0)).id;
+                    if is_new {
+                        ui.label(RichText::new(
+                            "Saved passwords are encrypted with this. It cannot be recovered if forgotten.",
+                        ).color(chrome.muted));
+                    }
+                    let edit = TextEdit::singleline(&mut *unlock.passphrase)
+                        .password(true)
+                        .id(egui::Id::unique("linecon-unlock-input"))
+                        .desired_width(f32::INFINITY);
+                    let response = ui.add(edit).labelled_by(label);
+                    response.request_focus();
+                    if let Some(error) = &unlock.error {
+                        ui.label(RichText::new(error).color(chrome.danger));
+                    }
+                    ui.horizontal(|ui| {
+                        submit = ui.button("Unlock").clicked() || ui.input(|i| i.key_pressed(Key::Enter));
+                        cancel = ui.button("Skip").clicked() || ui.input(|i| i.key_pressed(Key::Escape));
+                    });
+                });
+            });
+        if submit && !unlock.passphrase.is_empty() {
+            let result = self.vault.lock().unwrap().unlock(&unlock.passphrase);
+            match result {
+                Ok(()) => cancel = true,
+                Err(e) => {
+                    unlock.error = Some(e.to_string());
+                    unlock.passphrase.clear();
+                }
+            }
+        }
+        if cancel {
+            ctx.memory_mut(|m| m.surrender_focus(egui::Id::unique("linecon-unlock-input")));
+            // Skipping still opens the session; the device's prompt is the fallback.
+            if let Some(id) = unlock.then_open {
+                if let Some(session) = self.config.session(id).cloned() {
+                    let spec = self.spec_for(&session.name, Some(id), &session.target, "");
+                    self.open_in_new_tab(spec);
+                }
+            }
+        } else {
+            self.unlock = Some(unlock);
+        }
+    }
+
+    /// Logins, shown under global settings. Passwords go straight to the vault.
+    fn identities_section(&mut self, ui: &mut Ui, chrome: &Chrome) {
+        ui.add_space(6.0);
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Identities").size(13.0));
+            ui.with_layout(UiLayout::right_to_left(Align::Center), |ui| {
+                if ui.small_button("New").clicked() {
+                    self.config.add_identity("New identity", "");
+                    self.dirty = true;
+                }
+            });
+        });
+        let ids: Vec<Id> = self.config.identities.iter().map(|i| i.id).collect();
+        for id in ids {
+            let Some(identity) = self.config.identity(id).cloned() else {
+                continue;
+            };
+            let header = if identity.name.is_empty() {
+                "(unnamed)"
+            } else {
+                identity.name.as_str()
+            };
+            egui::CollapsingHeader::new(header.to_string())
+                .id_salt(("identity", id))
+                .show(ui, |ui| {
+                    let mut edited = identity.clone();
+                    let field = |ui: &mut Ui, label: &str, value: &mut String, hint: &str| {
+                        let label = ui
+                            .label(RichText::new(label).size(12.0).color(chrome.muted))
+                            .id;
+                        ui.add(
+                            TextEdit::singleline(value)
+                                .hint_text(hint)
+                                .desired_width(f32::INFINITY),
+                        )
+                        .labelled_by(label)
+                        .changed()
+                    };
+                    let mut changed = field(ui, "Name", &mut edited.name, "");
+                    changed |= field(ui, "Username", &mut edited.username, "");
+                    changed |= field(ui, "Key file", &mut edited.key_file, "None");
+                    changed |= ui
+                        .checkbox(&mut edited.use_agent, "Use SSH agent")
+                        .changed();
+                    let label = ui
+                        .label(RichText::new("Password").size(12.0).color(chrome.muted))
+                        .id;
+                    let locked = self.vault.lock().unwrap().is_locked();
+                    if identity.has_password {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Saved").color(chrome.success));
+                            if ui.small_button("Forget").clicked() && !locked {
+                                let _ = self.vault.lock().unwrap().remove(&identity.secret_key());
+                                edited.has_password = false;
+                                changed = true;
+                            }
+                        });
+                    } else {
+                        let draft = self.password_drafts.entry(id).or_default();
+                        ui.add(
+                            TextEdit::singleline(&mut **draft)
+                                .password(true)
+                                .hint_text("Not saved; ask each time")
+                                .desired_width(f32::INFINITY),
+                        )
+                        .labelled_by(label);
+                        if !draft.is_empty() && ui.button("Save password").clicked() {
+                            if locked {
+                                self.unlock = Some(Unlock::default());
+                            } else {
+                                let result = self
+                                    .vault
+                                    .lock()
+                                    .unwrap()
+                                    .set(&identity.secret_key(), draft.as_str());
+                                match result {
+                                    Ok(()) => {
+                                        edited.has_password = true;
+                                        changed = true;
+                                        self.password_drafts.remove(&id);
+                                    }
+                                    Err(e) => self.notice = Some(e.to_string()),
+                                }
+                            }
+                        }
+                    }
+                    if ui
+                        .button(RichText::new("Delete identity").color(chrome.danger))
+                        .clicked()
+                    {
+                        if identity.has_password {
+                            let _ = self.vault.lock().unwrap().remove(&identity.secret_key());
+                        }
+                        self.password_drafts.remove(&id);
+                        self.config.remove_identity(id);
+                        self.dirty = true;
+                    } else if changed {
+                        if let Some(slot) = self.config.identity_mut(id) {
+                            *slot = edited;
+                        }
+                        self.dirty = true;
+                    }
+                });
+        }
+    }
+
     fn paste_overlay(&mut self, ctx: &egui::Context, chrome: &Chrome) {
         let Some((id, text)) = self.paste_confirm.clone() else {
             return;
@@ -1474,6 +1682,12 @@ impl App {
         ui.add_space(6.0);
 
         let theme_names: Vec<String> = self.themes.iter().map(|t| t.name.clone()).collect();
+        let identity_names: Vec<(Id, String)> = self
+            .config
+            .identities
+            .iter()
+            .map(|i| (i.id, i.name.clone()))
+            .collect();
         let mut changed = false;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -1499,8 +1713,18 @@ impl App {
                     InspectTarget::Node(id) => self.config.overrides_mut(id),
                 };
                 if let Some(overrides) = overrides {
-                    changed |=
-                        settings_rows(ui, &resolved, overrides, &theme_names, show_serial, chrome);
+                    changed |= settings_rows(
+                        ui,
+                        &resolved,
+                        overrides,
+                        &theme_names,
+                        &identity_names,
+                        show_serial,
+                        chrome,
+                    );
+                }
+                if target == InspectTarget::Root {
+                    self.identities_section(ui, chrome);
                 }
             });
         if changed {
@@ -1513,6 +1737,13 @@ fn entry_policy(entry: Option<&PaneEntry>) -> linecon_engine::algorithms::Algori
     entry
         .map(|e| e.pane.spec.policy.clone())
         .unwrap_or_else(linecon_engine::algorithms::AlgorithmPolicy::legacy)
+}
+
+#[derive(Default)]
+struct Unlock {
+    passphrase: Zeroizing<String>,
+    error: Option<String>,
+    then_open: Option<Id>,
 }
 
 enum CardAction {
@@ -1983,15 +2214,41 @@ macro_rules! number_row {
 
 const BAUD_PRESETS: [u32; 9] = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400];
 
+#[allow(clippy::too_many_arguments)]
 fn settings_rows(
     ui: &mut Ui,
     r: &Resolved,
     o: &mut Overrides,
     theme_names: &[String],
+    identities: &[(Id, String)],
     show_serial: bool,
     chrome: &Chrome,
 ) -> bool {
     let mut changed = false;
+
+    let header = row_header(ui, "Identity", &r.identity, o.identity.is_some(), chrome);
+    if header.clear {
+        o.identity = None;
+        changed = true;
+    }
+    let current = o.identity.unwrap_or(r.identity.value);
+    let current_name = identities
+        .iter()
+        .find(|(id, _)| *id == current)
+        .map(|(_, name)| name.as_str())
+        .unwrap_or("None; ask each time");
+    let combo = egui::ComboBox::from_id_salt("identity")
+        .selected_text(current_name)
+        .width(220.0)
+        .show_ui(ui, |ui| {
+            for (id, name) in identities {
+                if ui.selectable_label(*id == current, name).clicked() {
+                    o.identity = Some(*id);
+                    changed = true;
+                }
+            }
+        });
+    combo.response.labelled_by(header.label);
 
     let header = row_header(ui, "Theme", &r.theme, o.theme.is_some(), chrome);
     if header.clear {

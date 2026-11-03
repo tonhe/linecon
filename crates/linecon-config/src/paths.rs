@@ -80,6 +80,10 @@ impl ConfigLocation {
         self.dir.join("known_hosts")
     }
 
+    pub fn secrets_file(&self) -> PathBuf {
+        self.dir.join("secrets.bin")
+    }
+
     pub fn themes_dir(&self) -> PathBuf {
         self.dir.join("themes")
     }

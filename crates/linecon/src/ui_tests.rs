@@ -315,3 +315,129 @@ fn typing_reaches_the_peer_and_output_reaches_the_screen() {
     }
     assert_eq!(seen, [0x1a, 0x1b, b'[', b'A']);
 }
+
+/// A saved identity logs in to the legacy server with nothing asked of the user
+/// but the host key, and a wrong one falls back to asking instead of retrying.
+#[test]
+fn saved_password_logs_in_without_asking() {
+    use crate::pane::{Pane, PaneSpec, Status};
+    use linecon_engine::HostKeyVerdict;
+    use std::process::Command;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use zeroize::Zeroizing;
+
+    let docker = |args: &[&str]| -> Option<String> {
+        let out = Command::new("docker").args(args).output().ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let context = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/docker/legacy-sshd"
+    );
+    let name = format!("linecon-identity-{}", std::process::id());
+    let started = docker(&["build", "-q", "-t", "linecon-legacy-sshd", context]).and_then(|_| {
+        docker(&[
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            &name,
+            "-P",
+            "linecon-legacy-sshd",
+        ])
+    });
+    if started.is_none() {
+        assert!(
+            std::env::var_os("LINECON_REQUIRE_DOCKER").is_none(),
+            "Docker is required here"
+        );
+        eprintln!("SKIPPED: no container runtime");
+        return;
+    }
+    struct Stop<'a>(&'a str);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            let _ = Command::new("docker").args(["rm", "-f", self.0]).output();
+        }
+    }
+    let _stop = Stop(&name);
+    let port: u16 = docker(&["port", &name, "2201"])
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+
+    let mut config = linecon_config::Config::default();
+    let who = config.add_identity("lab", "lab");
+    config.identity_mut(who).unwrap().has_password = true;
+    config.settings.identity = Some(who);
+    config.settings.legacy_algorithms = Some(true);
+    let target = Target {
+        host: "127.0.0.1".into(),
+        port: Some(port),
+        ..Default::default()
+    };
+    let resolved = config.resolve_root();
+    let settings = resolved.engine_settings_for(&config, &target, "");
+
+    let run = |password: &'static str| {
+        let spec = PaneSpec {
+            name: "lab".into(),
+            session_id: None,
+            settings: settings.clone(),
+            policy: resolved.algorithm_policy(),
+            log_dir: None,
+            scrollback: 1000,
+            copy_on_select: true,
+            auto_reconnect: false,
+            accept_weak: true,
+            password: Some(Arc::new(move || Some(Zeroizing::new(password.to_string())))),
+        };
+        Pane::new(spec, Arc::new(|| {}))
+    };
+
+    // Right password: only the host key is asked.
+    let pane = run("lab-password");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        assert!(Instant::now() < deadline, "never went live");
+        let pending = pane.shared.pending.lock().unwrap().clone();
+        match pending {
+            Some(Pending::HostKey(_)) => pane.answer_hostkey(HostKeyVerdict::AcceptOnce),
+            Some(Pending::Prompt(p)) => panic!("asked the user anyway: {p:?}"),
+            None => {}
+        }
+        if pane.status() == Status::Live {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(pane);
+
+    // Wrong password: tried once, then the user is asked.
+    let pane = run("wrong-password");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        assert!(Instant::now() < deadline, "the user was never asked");
+        let pending = pane.shared.pending.lock().unwrap().clone();
+        match pending {
+            Some(Pending::HostKey(_)) => pane.answer_hostkey(HostKeyVerdict::AcceptOnce),
+            Some(Pending::Prompt(p)) => {
+                assert!(p.fields[0].text.contains("password"), "{p:?}");
+                break;
+            }
+            None => {}
+        }
+        assert_ne!(pane.status(), Status::Live);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}

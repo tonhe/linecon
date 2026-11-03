@@ -11,8 +11,11 @@
 - Terminal window: sidebar, tabs, splits, palette, inspector, cards, themes and import, session
   logs, broadcast, search, auto-reconnect. Tested headlessly only.
 
+- Saved identities: username, key file, agent and password, inherited through folders. Passwords
+  use the OS store, or a passphrase-encrypted file in portable mode, and are answered once.
+
 ## In progress
-- Saved identities and secrets (`specs/004-identities`).
+- Nothing mid-task; next feature is being specified.
 
 ## Next
 - Agent support and port forwards, jump host tests, snippets, session imports, SFTP, MCP.
@@ -27,4 +30,7 @@
   container runtime. They run the loopback tests, and the protocol code is shared.
 - Jump hosts are wired to PuTTY's SSH proxy but not yet tested end to end.
 - Ctrl+V with an empty clipboard sends nothing.
+- OS secret stores are only automatically tested on Windows; Keychain and secret-service need a
+  logged-in desktop session.
+- Saved passwords are not used through a jump host, because the prompt may be the jump host's.
 - macOS builds are not notarized, so Gatekeeper blocks them until allowed by hand.
