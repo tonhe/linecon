@@ -12,6 +12,7 @@ mod keys;
 mod pane;
 mod serial_ports;
 mod session_log;
+mod sftp_pane;
 mod style;
 mod terminal;
 mod terminal_view;

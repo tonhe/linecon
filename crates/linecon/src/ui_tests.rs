@@ -736,3 +736,157 @@ fn search_finds_scrollback_and_steps_between_matches() {
     search_step(&pane, &mut search, false);
     assert!(search.no_match, "a bad pattern must not panic or match");
 }
+
+#[test]
+fn file_browser_lists_entries_only_when_opened() {
+    use crate::sftp_pane::SftpPane;
+    use linecon_engine::sftp::{Attrs, DirEntry};
+    let entry = |name: &str, permissions: u32, size: u64| DirEntry {
+        name: name.into(),
+        attrs: Attrs {
+            size: Some(size),
+            permissions: Some(permissions),
+            modified: None,
+        },
+    };
+    let mut s = sample();
+    s.app
+        .add_demo_tab("core-sw1", Some(s.core_sw), SHOW_VERSION);
+    let mut h = harness(s.app);
+    h.run_steps(2);
+    assert!(
+        h.query_by_label("Files").is_none(),
+        "the browser must not show by default"
+    );
+    h.state_mut().demo_files(SftpPane::demo(
+        "/home/netops",
+        vec![
+            entry("backups", 0o040755, 4096),
+            entry("running-config.txt", 0o100644, 18_204),
+            entry("c3750e-universalk9-mz.152-4.E10.bin", 0o100644, 26_214_400),
+        ],
+    ));
+    h.run_steps(3);
+    assert!(h.query_by_label("Files").is_some());
+    assert!(h.query_by_label("running-config.txt").is_some());
+    assert!(h.query_by_label("/home/netops").is_some());
+    screenshot(&mut h, "files");
+}
+
+/// The worker end to end: connect on the session's settings, then move a file
+/// each way using the same calls the panel makes.
+#[test]
+fn file_browser_moves_files_against_the_legacy_server() {
+    use crate::sftp_pane::{Question, SftpPane};
+    use linecon_engine::HostKeyVerdict;
+    use std::process::Command;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use zeroize::Zeroizing;
+
+    let docker = |args: &[&str]| -> Option<String> {
+        let out = Command::new("docker").args(args).output().ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let context = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/docker/legacy-sshd"
+    );
+    let name = format!("linecon-files-{}", std::process::id());
+    let started = docker(&["build", "-q", "-t", "linecon-legacy-sshd", context]).and_then(|_| {
+        docker(&[
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            &name,
+            "-P",
+            "linecon-legacy-sshd",
+        ])
+    });
+    if started.is_none() {
+        assert!(
+            std::env::var_os("LINECON_REQUIRE_DOCKER").is_none(),
+            "Docker is required here"
+        );
+        eprintln!("SKIPPED: no container runtime");
+        return;
+    }
+    struct Stop<'a>(&'a str);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            let _ = Command::new("docker").args(["rm", "-f", self.0]).output();
+        }
+    }
+    let _stop = Stop(&name);
+    let port: u16 = docker(&["port", &name, "2201"])
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+
+    let mut settings = linecon_engine::settings::Settings::ssh("127.0.0.1", port, "lab");
+    settings.algorithms(&AlgorithmPolicy::legacy());
+    let mut pane = SftpPane::open(
+        settings,
+        Some(Arc::new(|| {
+            Some(Zeroizing::new("lab-password".to_string()))
+        })),
+        true,
+        Arc::new(|| {}),
+    );
+    let wait_idle = |pane: &mut SftpPane| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            assert!(Instant::now() < deadline, "the browser never settled");
+            let question = pane.state.lock().unwrap().question.clone();
+            match question {
+                Some(Question::HostKey(_)) => pane.answer_host_key(HostKeyVerdict::AcceptOnce),
+                Some(Question::Prompt(p)) => panic!("asked despite a saved password: {p:?}"),
+                None => {}
+            }
+            let s = pane.state.lock().unwrap();
+            if !s.busy && (s.connected || s.error.is_some()) {
+                assert_eq!(s.error, None);
+                return;
+            }
+            drop(s);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    wait_idle(&mut pane);
+    assert_eq!(pane.current_path(), "/home/lab");
+
+    let dir = std::env::temp_dir().join(format!("linecon-files-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let local = dir.join("config.bin");
+    let content: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&local, &content).unwrap();
+    pane.upload(&local);
+    wait_idle(&mut pane);
+    assert!(pane.would_overwrite(&local));
+
+    let downloads = dir.join("downloads");
+    std::fs::create_dir_all(&downloads).unwrap();
+    // Twice, so the second gets a fresh name rather than replacing the first.
+    pane.download("config.bin", &downloads);
+    wait_idle(&mut pane);
+    pane.download("config.bin", &downloads);
+    wait_idle(&mut pane);
+    assert!(std::fs::read(downloads.join("config.bin")).unwrap() == content);
+    assert!(std::fs::read(downloads.join("config (1).bin")).unwrap() == content);
+    assert!(!downloads.join("config.bin.part").exists());
+
+    pane.delete("config.bin", false);
+    wait_idle(&mut pane);
+    assert!(!pane.would_overwrite(&local));
+    std::fs::remove_dir_all(dir).unwrap();
+}

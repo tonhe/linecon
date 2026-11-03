@@ -24,11 +24,13 @@
 
 - Serial port discovery and console presets. Algorithm order chosen by the user is what PuTTY negotiates.
 
+- SFTP file browser on request (Ctrl+Shift+S): list, download, upload by drop, mkdir, rename, delete.
+
 ## In progress
-- SFTP pane: the engine half is done and tested; the browser UI is next (`specs/008-sftp`).
+- Next: MCP server, so an agent can drive open sessions.
 
 ## Next
-- SFTP pane, MCP server, snippet sharing.
+- MCP server, snippet sharing.
 
 ## Blocked
 - Nothing.

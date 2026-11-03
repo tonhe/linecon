@@ -45,6 +45,20 @@ impl Drop for Stop {
     }
 }
 
+/// Starts a server, or reports a skip. Where Docker is required, a failure to
+/// start must fail the test rather than let it pass having tested nothing.
+fn start_or_skip() -> Option<(Stop, Settings)> {
+    let started = start();
+    if started.is_none() {
+        assert!(
+            std::env::var_os("LINECON_REQUIRE_DOCKER").is_none(),
+            "Docker is required here"
+        );
+        eprintln!("SKIPPED: no container runtime");
+    }
+    started
+}
+
 fn start() -> Option<(Stop, Settings)> {
     let context = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/docker/legacy-sshd");
     docker(&[
@@ -54,7 +68,10 @@ fn start() -> Option<(Stop, Settings)> {
         "linecon-legacy-sshd",
         context.to_str()?,
     ])?;
-    let name = format!("linecon-sftp-{}", std::process::id());
+    // Tests run in parallel, so each needs its own container name.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = format!("linecon-sftp-{}-{n}", std::process::id());
     docker(&[
         "run",
         "-d",
@@ -99,12 +116,7 @@ fn download_bytes(sftp: &mut Sftp, path: &str) -> io::Result<Vec<u8>> {
 
 #[test]
 fn files_survive_the_trip_on_legacy_algorithms() {
-    let Some((_stop, settings)) = start() else {
-        assert!(
-            std::env::var_os("LINECON_REQUIRE_DOCKER").is_none(),
-            "Docker is required here"
-        );
-        eprintln!("SKIPPED: no container runtime");
+    let Some((_stop, settings)) = start_or_skip() else {
         return;
     };
     let mut sftp = Sftp::connect(&settings, &mut Lab).expect("connect");
@@ -171,10 +183,10 @@ fn files_survive_the_trip_on_legacy_algorithms() {
 
 #[test]
 fn a_server_without_sftp_says_so() {
-    let Some((stop, mut settings)) = start() else {
+    let Some((stop, mut settings)) = start_or_skip() else {
         return;
     };
-    // 2204 is not used here: 2205 has no subsystem configured.
+    // 2205 has no subsystem configured.
     let port = docker(&["port", &stop.0, "2205"]).unwrap();
     let port: u16 = port
         .lines()
