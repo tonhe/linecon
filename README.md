@@ -2,6 +2,15 @@
 
 `line con 0`
 
+[![CI](https://github.com/tonhe/linecon/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tonhe/linecon/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/tonhe/linecon?include_prereleases&sort=date&label=release)](https://github.com/tonhe/linecon/releases)
+[![Downloads](https://img.shields.io/github/downloads/tonhe/linecon/total)](https://github.com/tonhe/linecon/releases)
+[![License: MIT](https://img.shields.io/github/license/tonhe/linecon)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-blue)](#install)
+[![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange?logo=rust)](https://www.rust-lang.org)
+[![Protocol engine: PuTTY](https://img.shields.io/badge/protocol%20engine-PuTTY-informational)](https://www.chiark.greenend.org.uk/~sgtatham/putty/)
+[![GitHub stars](https://img.shields.io/github/stars/tonhe/linecon?style=flat)](https://github.com/tonhe/linecon/stargazers)
+
 A portable SSH, Telnet and serial client for network engineers. It uses PuTTY
 as its protocol engine, so it can still talk to old hardware that needs SSH-1,
 group1-sha1, 3des-cbc, arcfour, ssh-dss or SHA-1 ssh-rsa.
