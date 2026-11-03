@@ -180,3 +180,10 @@ Cloud desktops and many VMs have no GPU, and Windows offers them no usable OpenG
 just fails to appear. Both OpenGL and wgpu are built in. Windows starts with wgpu, which has a software Direct3D
 adapter, and everything else starts with OpenGL. Each falls back to the other, at the cost of a larger binary.
 With no console on Windows, startup failures also go to a message box and to `linecon-error.log` beside the config.
+
+## 2026-11-03: The Windows build is a console program that hides its console
+
+As a GUI-subsystem program, a shell does not wait for it, so an interactive `linecon ssh` competed with cmd for
+the keyboard and output landed after the prompt. A single executable cannot be both, so it is a console program,
+and it releases its console when started from Explorer. The cost is a console window that may flash on a double
+click. Attached to a shell, the window's errors stay visible.

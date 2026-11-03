@@ -3,9 +3,6 @@
 //! With no arguments this opens the window; with arguments it is a command-line
 //! client, which is handy on a jump box or in a script.
 
-// Without this, Windows opens a console window behind the GUI.
-#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
-
 mod app;
 mod cli;
 mod keys;
@@ -31,9 +28,9 @@ fn main() {
         std::process::exit(run_window(Some(file.into())));
     }
     if !args.is_empty() {
-        attach_console();
         std::process::exit(cli::run(args));
     }
+    hide_own_console();
     std::process::exit(run_window(None));
 }
 
@@ -191,15 +188,24 @@ fn message_box(text: &str) {
     };
 }
 
-/// The GUI subsystem has no console, so borrow the parent's for command-line use.
+/// This is a console program, because the command line has to work properly from a
+/// shell: the shell waits for it, and they do not compete for the keyboard. Started
+/// from Explorer, Windows gives it a console of its own, which the window does not
+/// want. A console with only this process in it is that case. Started from a shell
+/// it stays attached, so any errors are visible there.
 #[cfg(windows)]
-fn attach_console() {
+fn hide_own_console() {
     extern "system" {
-        fn AttachConsole(process: u32) -> i32;
+        fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+        fn FreeConsole() -> i32;
     }
-    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
-    unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+    let mut list = [0u32; 4];
+    unsafe {
+        if GetConsoleProcessList(list.as_mut_ptr(), list.len() as u32) == 1 {
+            FreeConsole();
+        }
+    }
 }
 
 #[cfg(not(windows))]
-fn attach_console() {}
+fn hide_own_console() {}
