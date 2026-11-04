@@ -1,6 +1,7 @@
 //! One terminal pane: a session, its emulator state, and the thread that moves
 //! bytes between them.
 
+use std::net::ToSocketAddrs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -42,6 +43,44 @@ pub struct PaneSpec {
 }
 
 pub type PasswordLookup = Arc<dyn Fn() -> Option<Zeroizing<String>> + Send + Sync>;
+
+/// Asks the server what it offers, without making whoever is closing this pane wait for it.
+fn probe_unless_stopped(
+    host: &str,
+    port: u16,
+    shared: &PaneShared,
+) -> Option<negotiation::ServerOffer> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let host = host.to_string();
+    std::thread::spawn(move || {
+        let _ = tx.send(negotiation::probe(&host, port, Duration::from_secs(5)).ok());
+    });
+    while !shared.stop.load(Ordering::SeqCst) {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(offer) => return offer,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+        }
+    }
+    None
+}
+
+/// The name a connection will have to look up, if there is one to do here. Through a jump
+/// host the far end looks it up, and serial lines and addresses need nothing.
+fn name_to_look_up(settings: &Settings) -> Option<(String, u16)> {
+    if settings.get("Protocol") == Some("serial") || settings.get("ProxyHost").is_some() {
+        return None;
+    }
+    let host = settings.get("HostName")?;
+    if host.is_empty() || host.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+    let port = settings
+        .get("PortNumber")
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(22);
+    Some((host.to_string(), port))
+}
 
 /// Whether to answer this prompt with the saved password. Only once per
 /// connection, so a wrong password falls back to the user instead of locking the
@@ -88,6 +127,7 @@ pub struct PaneShared {
     retry_with_key: AtomicBool,
     /// Used to convert the key, then to answer PuTTY when it asks for the same thing.
     key_passphrase: Mutex<Option<Zeroizing<String>>>,
+    lookup_done: Mutex<Option<(u64, Result<(), String>)>>,
     /// The device only speaks SSH-1, and the legacy toggle allows it.
     pub wants_ssh1: AtomicBool,
 }
@@ -103,6 +143,8 @@ pub struct Pane {
     /// forced it once should not keep it for the life of the pane.
     on_ssh1_fallback: bool,
     starting_ssh1_fallback: bool,
+    lookup_generation: u64,
+    waiting_on_lookup: Option<(u64, Settings)>,
     pub reconnect_attempts: u32,
 }
 
@@ -127,6 +169,7 @@ impl Pane {
             asking_for_key: AtomicBool::new(false),
             retry_with_key: AtomicBool::new(false),
             key_passphrase: Mutex::new(None),
+            lookup_done: Mutex::new(None),
             wants_ssh1: AtomicBool::new(false),
         });
         let mut pane = Self {
@@ -139,6 +182,8 @@ impl Pane {
             reconnect_attempts: 0,
             on_ssh1_fallback: false,
             starting_ssh1_fallback: false,
+            lookup_generation: 0,
+            waiting_on_lookup: None,
         };
         pane.connect();
         pane
@@ -162,6 +207,7 @@ impl Pane {
             asking_for_key: AtomicBool::new(false),
             retry_with_key: AtomicBool::new(false),
             key_passphrase: Mutex::new(None),
+            lookup_done: Mutex::new(None),
             wants_ssh1: AtomicBool::new(false),
         });
         Self {
@@ -174,6 +220,8 @@ impl Pane {
             reconnect_attempts: 0,
             on_ssh1_fallback: false,
             starting_ssh1_fallback: false,
+            lookup_generation: 0,
+            waiting_on_lookup: None,
         }
     }
 
@@ -204,6 +252,53 @@ impl Pane {
         }
         let size = self.shared.core.lock().unwrap().size();
         settings.terminal_size(size.cols as u16, size.rows as u16);
+        self.lookup_generation += 1;
+        match name_to_look_up(&settings) {
+            Some((host, port)) => self.look_up_first(host, port, settings),
+            None => self.open_session(settings),
+        }
+    }
+
+    /// PuTTY looks names up on the one thread all sessions share, and waits. Doing it here
+    /// first means a dead DNS server fails this session alone, and PuTTY's own lookup finds
+    /// the answer cached when there is one.
+    fn look_up_first(&mut self, host: String, port: u16, settings: Settings) {
+        let generation = self.lookup_generation;
+        self.waiting_on_lookup = Some((generation, settings));
+        let shared = self.shared.clone();
+        let repaint = self.repaint.clone();
+        std::thread::spawn(move || {
+            let result = (host.as_str(), port)
+                .to_socket_addrs()
+                .map(|_| ())
+                .map_err(|e| format!("could not look up {host}: {e}"));
+            *shared.lookup_done.lock().unwrap() = Some((generation, result));
+            repaint();
+        });
+    }
+
+    fn finish_lookup(&mut self) {
+        let Some((generation, result)) = self.shared.lookup_done.lock().unwrap().take() else {
+            return;
+        };
+        // A newer connect or a stop has moved on from this one.
+        if generation != self.lookup_generation {
+            return;
+        }
+        let Some((_, settings)) = self.waiting_on_lookup.take() else {
+            return;
+        };
+        match result {
+            Ok(()) => self.open_session(settings),
+            Err(reason) => {
+                *self.shared.status.lock().unwrap() = Status::Closed {
+                    reason: Some(reason),
+                };
+            }
+        }
+    }
+
+    fn open_session(&mut self, settings: Settings) {
         match Session::open(&settings) {
             Ok(session) => {
                 let session = Arc::new(session);
@@ -345,6 +440,7 @@ impl Pane {
     /// Follow-up after a closure: fall back to SSH-1 if that is what the device
     /// needs, otherwise reconnect on a schedule if this session asked for that.
     pub fn tick_reconnect(&mut self) {
+        self.finish_lookup();
         if self.shared.retry_with_key.swap(false, Ordering::SeqCst) {
             self.connect();
             return;
@@ -544,7 +640,7 @@ fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint:
                             .unwrap_or(22);
                         let direct = spec.settings.get("ProxyHost").is_none();
                         let offer = direct
-                            .then(|| negotiation::probe(host, port, Duration::from_secs(5)).ok())
+                            .then(|| probe_unless_stopped(host, port, &shared))
                             .flatten();
                         *shared.failure.lock().unwrap() =
                             Some(NegotiationFailure::new(text, &spec.policy, offer));
@@ -563,6 +659,23 @@ fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_names_are_looked_up_here() {
+        let mut settings = Settings::ssh("sw1.example", 2222, "me");
+        assert_eq!(
+            name_to_look_up(&settings),
+            Some(("sw1.example".to_string(), 2222))
+        );
+        settings.set("ProxyHost", "jump");
+        assert_eq!(
+            name_to_look_up(&settings),
+            None,
+            "the jump host looks it up"
+        );
+        assert_eq!(name_to_look_up(&Settings::ssh("10.0.0.1", 22, "me")), None);
+        assert_eq!(name_to_look_up(&Settings::ssh("fe80::1", 22, "me")), None);
+    }
     use linecon_engine::PromptField;
 
     fn prompt(text: &str, echo: bool) -> Prompt {
