@@ -35,8 +35,9 @@ sign_and_notarize() {
   security list-keychains -d user -s "$keychain" login.keychain-db
   identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)
   if [ -z "$identity" ]; then
-    echo "no valid Developer ID Application certificate in MACOS_CERT_P12. It holds:" >&2
-    security find-identity -p codesigning "$keychain" >&2
+    # Types only: these logs are public, and a certificate's name can hold an email address.
+    echo "no valid Developer ID Application certificate in MACOS_CERT_P12. It holds these types:" >&2
+    security find-identity -p codesigning "$keychain" | sed -n 's/.*"\([^:"]*\):.*/  \1/p' | sort -u >&2
     exit 1
   fi
   sign() { codesign --force --options runtime --timestamp --sign "$identity" "$@"; }
