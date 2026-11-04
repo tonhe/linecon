@@ -182,6 +182,7 @@ enum Command {
     QuickConnect(String),
     /// Find a saved session, or connect to something new.
     FindConnection,
+    NewTab,
 }
 
 const SAVE_RETRY: Duration = Duration::from_secs(5);
@@ -242,6 +243,9 @@ pub struct App {
     palette: Option<(String, usize)>,
     /// The palette is only finding connections, not commands.
     palette_connections_only: bool,
+    /// A new tab that has not been given a connection yet. It only becomes a real tab once
+    /// something is chosen, so closing it leaves nothing behind.
+    picking_new_tab: bool,
     inspector: Option<InspectTarget>,
     renaming: Option<(Id, String)>,
     paste_confirm: Option<(PaneId, String)>,
@@ -375,6 +379,7 @@ impl App {
             quick_connect: String::new(),
             palette: None,
             palette_connections_only: false,
+            picking_new_tab: false,
             inspector: None,
             renaming: None,
             paste_confirm: None,
@@ -687,6 +692,7 @@ impl App {
                 self.quick_connect_to(&text);
             }
             Command::FindConnection => self.open_connection_finder(),
+            Command::NewTab => self.open_new_tab_picker(),
             Command::RunSnippet(text) => self.run_snippet(&text),
             Command::ToggleFiles => self.toggle_files(),
             Command::SessionSettings => {
@@ -811,6 +817,14 @@ impl App {
                 } else {
                     self.run_command(ctx, command);
                 }
+            }
+        }
+        if pressed(Key::T, shift_cmd) {
+            if self.picking_new_tab {
+                self.palette = None;
+                self.picking_new_tab = false;
+            } else {
+                self.open_new_tab_picker();
             }
         }
         if pressed(Key::K, shift_cmd) {
@@ -939,7 +953,7 @@ impl App {
                 )
                 .show(ui, |ui| self.files_panel(ui, &chrome));
         }
-        if self.tabs.len() > 1 {
+        if self.tabs.len() > 1 || self.picking_new_tab {
             Panel::top("tabs")
                 .exact_size(34.0)
                 .frame(
@@ -954,7 +968,7 @@ impl App {
         let background = style::color(chrome_theme.background);
         ui.painter()
             .rect_filled(central, CornerRadius::ZERO, background);
-        if self.tabs.is_empty() {
+        if self.tabs.is_empty() || self.picking_new_tab {
             self.empty_state(ui, central, &chrome);
         } else if let Some(layout) = self.tabs.get(self.active_tab).map(|t| t.layout.clone()) {
             // The copy only carries divider positions back. Nothing may change the

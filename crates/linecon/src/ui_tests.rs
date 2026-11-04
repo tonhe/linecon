@@ -2166,3 +2166,69 @@ fn the_finder_shortcut_goes_to_the_app_and_not_the_device() {
     h.run_steps(2);
     assert!(!h.state().palette_open_for_test());
 }
+
+fn app_shortcut() -> egui::Modifiers {
+    if cfg!(target_os = "macos") {
+        egui::Modifiers::MAC_CMD
+    } else {
+        egui::Modifiers::CTRL | egui::Modifiers::SHIFT
+    }
+}
+
+#[test]
+fn a_new_tab_offers_saved_sessions_and_leaves_nothing_if_closed() {
+    let mut s = sample();
+    s.app.add_demo_tab("core-sw1", Some(s.core_sw), b"BEFORE");
+    let mut h = harness(s.app);
+    h.run_steps(2);
+    h.key_press_modifiers(app_shortcut(), egui::Key::T);
+    h.run_steps(3);
+    h.get_by_label("New tab");
+    assert!(h.state().palette_open_for_test());
+    assert_eq!(
+        h.state().tab_count(),
+        1,
+        "not a real tab until something is chosen"
+    );
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(h.query_by_label("New tab").is_none());
+    assert!(!h.state().palette_open_for_test());
+    assert_eq!(h.state().tab_count(), 1);
+    assert!(h.state().focused_screen_contains("BEFORE"));
+}
+
+#[test]
+fn choosing_in_a_new_tab_opens_it() {
+    let mut s = sample();
+    s.app.add_demo_tab("core-sw1", Some(s.core_sw), b"BEFORE");
+    s.app
+        .config
+        .add_session(None, "only-here", target("127.0.0.1"))
+        .unwrap();
+    let mut h = harness(s.app);
+    h.run_steps(2);
+    h.key_press_modifiers(app_shortcut(), egui::Key::T);
+    h.run_steps(3);
+    h.get_all_by_role(egui::accesskit::Role::TextInput)
+        .last()
+        .unwrap()
+        .type_text("only-here");
+    h.run_steps(3);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.state().tab_count(), 2);
+    assert!(!h.state().palette_open_for_test());
+}
+
+/// Plain Ctrl+T means something to a device.
+#[test]
+fn only_the_app_shortcut_opens_a_new_tab() {
+    let mut h = harness(App::new(location()));
+    h.run_steps(2);
+    if !cfg!(target_os = "macos") {
+        h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::T);
+        h.run_steps(2);
+        assert!(!h.state().palette_open_for_test());
+    }
+}

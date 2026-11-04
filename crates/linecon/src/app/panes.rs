@@ -269,7 +269,7 @@ impl App {
                     }
                     None => (String::new(), Status::Connecting),
                 };
-                let selected = index == self.active_tab;
+                let selected = index == self.active_tab && !self.picking_new_tab;
                 let short: String = title.chars().take(24).collect();
                 let dot = match status {
                     Status::Live => chrome.success,
@@ -297,6 +297,8 @@ impl App {
                     .interact(Sense::click());
                 if response.clicked() {
                     self.active_tab = index;
+                    self.picking_new_tab = false;
+                    self.palette = None;
                 }
                 if ui
                     .add(
@@ -312,6 +314,25 @@ impl App {
                 if response.clicked_by(egui::PointerButton::Middle) {
                     close = Some(focused);
                 }
+            }
+            if self.picking_new_tab {
+                Frame::new()
+                    .fill(chrome.raised)
+                    .corner_radius(6)
+                    .inner_margin(Margin::symmetric(10, 3))
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("New tab").color(chrome.text));
+                    });
+            } else if ui
+                .add(
+                    egui::Button::new("+")
+                        .frame(false)
+                        .min_size(vec2(24.0, 24.0)),
+                )
+                .on_hover_text("New tab")
+                .clicked()
+            {
+                self.open_new_tab_picker();
             }
         });
         if let Some(id) = close {

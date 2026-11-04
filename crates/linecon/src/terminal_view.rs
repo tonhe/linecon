@@ -43,11 +43,11 @@ pub struct ViewOutput {
 /// Only keys that do something here. Others go to the device: Ctrl+Shift+6 is how Cisco
 /// gear is escaped from.
 fn is_app_shortcut(key: egui::Key, m: Modifiers) -> bool {
-    use egui::Key::{B, C, D, E, F, I, K, P, R, S, V, W};
+    use egui::Key::{B, C, D, E, F, I, K, P, R, S, T, V, W};
     if cfg!(target_os = "macos") {
         m.mac_cmd
     } else {
-        m.ctrl && m.shift && matches!(key, B | C | D | E | F | I | K | P | R | S | V | W)
+        m.ctrl && m.shift && matches!(key, B | C | D | E | F | I | K | P | R | S | T | V | W)
     }
 }
 

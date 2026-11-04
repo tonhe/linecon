@@ -28,6 +28,7 @@ impl App {
             });
         };
         add("Find or connect", &shortcut("K"), Command::FindConnection);
+        add("New tab", &shortcut("T"), Command::NewTab);
         add("Split right", &shortcut("D"), Command::SplitRight);
         add("Split down", &shortcut("E"), Command::SplitDown);
         add("Close pane", &shortcut("W"), Command::ClosePane);
@@ -205,6 +206,11 @@ impl App {
         self.palette_connections_only = true;
     }
 
+    pub(super) fn open_new_tab_picker(&mut self) {
+        self.open_connection_finder();
+        self.picking_new_tab = true;
+    }
+
     pub(super) fn palette_overlay(&mut self, ctx: &egui::Context, chrome: &Chrome) {
         let Some((mut query, mut selected)) = self.palette.take() else {
             return;
@@ -326,6 +332,7 @@ impl App {
             close = true;
         }
         if close {
+            self.picking_new_tab = false;
             ctx.memory_mut(|m| m.surrender_focus(egui::Id::unique("linecon-palette-input")));
         } else {
             self.palette = Some((query, selected));
