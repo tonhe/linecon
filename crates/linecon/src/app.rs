@@ -317,11 +317,17 @@ impl App {
                     .to_string(),
             );
         }
-        if let Ok(store) =
-            linecon_engine::hostkeys::KnownHostsFile::open(&location.known_hosts_file())
-        {
-            linecon_engine::set_hostkey_store(Arc::new(store));
-        }
+        // Without this file a changed host key looks like a new one, so that gets said.
+        let known_hosts_error =
+            match linecon_engine::hostkeys::KnownHostsFile::open(&location.known_hosts_file()) {
+                Ok(store) => {
+                    linecon_engine::set_hostkey_store(Arc::new(store));
+                    None
+                }
+                Err(e) => Some(format!(
+                    "Could not read known hosts, so changed host keys cannot be detected: {e}"
+                )),
+            };
         let vault = Arc::new(Mutex::new(Vault::new(
             location.mode == linecon_config::Mode::Portable,
             location.secrets_file(),
@@ -335,7 +341,7 @@ impl App {
             save_error: None,
             last_failed_save: None,
             _instance_lock: instance_lock.ok(),
-            error: None,
+            error: known_hosts_error,
             info: None,
             update_key: update::public_key()
                 .filter(|_| update::Version::parse(linecon_engine::VERSION).is_some()),

@@ -42,7 +42,16 @@ fn read_line(stream: &mut impl Read) -> io::Result<String> {
     if line.last() == Some(&b'\r') {
         line.pop();
     }
-    Ok(String::from_utf8_lossy(&line).into_owned())
+    Ok(printable(&line))
+}
+
+/// Text from a server that has not authenticated, which ends up on someone's terminal, so
+/// it does not get to send escape sequences there.
+fn printable(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect()
 }
 
 fn bad(what: &str) -> io::Error {
@@ -57,7 +66,7 @@ fn name_list(payload: &mut &[u8]) -> io::Result<Vec<String>> {
     if payload.len() < 4 + len {
         return Err(bad("truncated KEXINIT"));
     }
-    let text = String::from_utf8_lossy(&payload[4..4 + len]).into_owned();
+    let text = printable(&payload[4..4 + len]);
     *payload = &payload[4 + len..];
     Ok(text
         .split(',')
@@ -100,7 +109,15 @@ pub fn probe(host: &str, port: u16, timeout: Duration) -> io::Result<ServerOffer
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
 
+    // The timeout is per read, and a server could send a line every few seconds forever.
+    let deadline = std::time::Instant::now() + timeout;
     let banner = loop {
+        if std::time::Instant::now() > deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "no SSH banner in time",
+            ));
+        }
         let line = read_line(&mut stream)?;
         if line.starts_with("SSH-") {
             break line;
@@ -219,6 +236,35 @@ impl fmt::Display for NegotiationFailure {
         row("host key", &offer.host_keys, &self.allowed_host_keys)?;
         row("cipher", &offer.ciphers_c2s, &self.allowed_ciphers)?;
         row("mac", &offer.macs_c2s, &self.allowed_macs)
+    }
+}
+
+#[cfg(test)]
+mod hostile_server_tests {
+    use super::*;
+
+    #[test]
+    fn server_text_cannot_carry_escape_sequences() {
+        assert_eq!(
+            printable(b"SSH-2.0-x\x1b]0;owned\x07y"),
+            "SSH-2.0-x]0;ownedy"
+        );
+    }
+
+    #[test]
+    fn a_server_that_never_sends_a_banner_gives_up() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            while stream.write_all(b"not ssh yet\r\n").is_ok() {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let started = std::time::Instant::now();
+        assert!(probe("127.0.0.1", port, Duration::from_millis(500)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }
 

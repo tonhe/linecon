@@ -177,7 +177,10 @@ fn tokens(table: &'static [AlgorithmClass]) -> Vec<&'static str> {
 }
 
 impl AlgorithmPolicy {
-    /// Modern algorithms only; anything legacy is refused.
+    /// Modern algorithms first, with legacy ones below the warning line so they are refused.
+    /// That covers what PuTTY can warn about: it has no MAC preference and no warning for
+    /// every SHA-1 key exchange, so hmac-md5, hmac-sha1 and group14-sha1 can still be chosen
+    /// when a server offers nothing better.
     pub fn modern() -> Self {
         Self {
             legacy: false,

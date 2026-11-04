@@ -325,7 +325,22 @@ impl Drop for Pane {
     }
 }
 
+/// Marks the pane closed if its pump panics, rather than leaving it looking connected.
+struct PumpGuard(Arc<PaneShared>);
+
+impl Drop for PumpGuard {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let mut status = self.0.status.lock().unwrap_or_else(|e| e.into_inner());
+            *status = Status::Closed {
+                reason: Some("internal error in this session".to_string()),
+            };
+        }
+    }
+}
+
 fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint: Repaint) {
+    let _guard = PumpGuard(shared.clone());
     let mut log = spec
         .log_dir
         .as_ref()

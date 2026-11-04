@@ -102,6 +102,8 @@ instruct the agent, so everything is opt-in:
   drops, including an automatic reconnect, and no mode is ever saved. Agents have no way to change a mode.
 - A pane with access is marked on screen, and input is refused while it is waiting on a password.
 - Agents cannot open connections, read saved passwords or change settings.
+- Its token file is only readable by you on macOS and Linux. On Windows it relies on your profile folder's permissions,
+  and a portable copy on a FAT or exFAT drive has no file permissions at all, so anyone with the drive could use it.
 
 Point your MCP client at the command `linecon mcp`.
 

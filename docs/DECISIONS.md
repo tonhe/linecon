@@ -203,3 +203,9 @@ and the encryption is only as strong as the configuration passphrase, usually em
 only to the secret store, never to the config file or a bundle. An inline password gets its own login so it cannot be
 sent to another device, and a SecureCRT credential stays shared because its owner chose that. The older `Password`
 format is not read, so those sessions ask.
+
+## 2026-11-04: A panic ends the program, except that a pump says so first
+
+Most locks unwrap, and a panic inside a C callback aborts. Carrying on with state that may be half-changed is worse for a
+tool connected to live devices. A pane's pump thread marks its pane closed as it goes, so a panic there cannot leave a
+pane looking connected.
