@@ -234,6 +234,8 @@ pub struct App {
     /// The key updates must be signed with. `None` turns updating off entirely, as in a
     /// development build.
     update_key: Option<[u8; 32]>,
+    /// Where the keyboard was when the last frame ended.
+    focus_last_frame: Option<egui::Id>,
     imported_passwords: ImportedPasswords,
     update_state: UpdateState,
     update_rx: Option<std::sync::mpsc::Receiver<UpdateEvent>>,
@@ -349,6 +351,7 @@ impl App {
             info: None,
             update_key: update::public_key()
                 .filter(|_| update::Version::parse(linecon_engine::VERSION).is_some()),
+            focus_last_frame: None,
             imported_passwords: ImportedPasswords::default(),
             update_state: UpdateState::Idle,
             update_rx: None,
@@ -1348,6 +1351,7 @@ impl App {
         self.palette_overlay(&ctx, &chrome);
         self.paste_overlay(&ctx, &chrome);
         self.unlock_overlay(&ctx, &chrome);
+        self.focus_last_frame = ctx.memory(|m| m.focused());
         self.poll_imported_passwords();
         self.imported_passphrase_overlay(&ctx, &chrome);
         self.agent_proposal_overlay(&ctx, &chrome);
@@ -1530,8 +1534,19 @@ impl App {
         let overlay_open =
             self.palette.is_some() || self.paste_confirm.is_some() || self.unlock.is_some();
         let has_pending = entry.pane.shared.pending.lock().unwrap().is_some();
-        let focused =
-            is_focused_pane && !overlay_open && !has_pending && !self.other_widget_has_focus(&ctx);
+        // A field that had the keyboard last frame may have just given it up on this very
+        // key, which was for the field. The terminal starts listening from the next frame.
+        let keyboard_was_elsewhere = self
+            .focus_last_frame
+            .is_some_and(|last| last != terminal_id(id));
+        if keyboard_was_elsewhere {
+            ctx.request_repaint();
+        }
+        let focused = is_focused_pane
+            && !overlay_open
+            && !has_pending
+            && !keyboard_was_elsewhere
+            && !self.other_widget_has_focus(&ctx);
 
         let entry = self.panes.get_mut(&id).unwrap();
         let output = terminal_view::show(
@@ -4855,6 +4870,15 @@ impl App {
     pub fn set_focused_agent_access(&mut self, access: Access) {
         let id = self.focused_pane().unwrap();
         self.panes.get_mut(&id).unwrap().agent = access;
+    }
+
+    pub fn open_search_for_test(&mut self) {
+        let id = self.focused_pane().unwrap();
+        self.panes.get_mut(&id).unwrap().search.open = true;
+    }
+
+    pub fn search_open_for_test(&self) -> bool {
+        self.panes[&self.focused_pane().unwrap()].search.open
     }
 
     pub fn set_focused_live_for_test(&mut self, live: bool) {

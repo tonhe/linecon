@@ -1920,3 +1920,44 @@ fn proposal_keys_cannot_approve() {
         "pending"
     );
 }
+
+/// A key meant for a field must not also reach the device.
+#[test]
+fn closing_the_search_bar_does_not_send_escape_to_the_device() {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 64];
+        while let Ok(n) = stream.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut h = harness(App::new(location()));
+    h.run_steps(3);
+    h.state_mut().quick_open(&format!("raw://127.0.0.1:{port}"));
+    let settle = |h: &mut Harness<'static, App>| {
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(600);
+        while std::time::Instant::now() < until {
+            h.step();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    };
+    settle(&mut h);
+    h.state_mut().open_search_for_test();
+    h.run_steps(2);
+    h.get_all_by_role(egui::accesskit::Role::TextInput)
+        .last()
+        .unwrap()
+        .focus();
+    h.run_steps(2);
+    h.key_press(egui::Key::Escape);
+    settle(&mut h);
+    assert!(!h.state().search_open_for_test(), "the bar stayed open");
+    let got: Vec<u8> = rx.try_iter().flatten().collect();
+    assert!(got.is_empty(), "sent to the device: {got:?}");
+}
