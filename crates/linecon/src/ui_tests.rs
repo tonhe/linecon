@@ -895,7 +895,7 @@ fn file_browser_moves_files_against_the_legacy_server() {
 /// Access set in the window is what the agent server enforces, and it is off
 /// until granted.
 #[test]
-fn agent_access_is_off_until_granted_pane_by_pane() {
+fn agent_access_is_off_until_the_server_is_started() {
     use crate::mcp::{handle, Access};
     use serde_json::json;
     let mut s = sample();
@@ -925,7 +925,9 @@ fn agent_access_is_off_until_granted_pane_by_pane() {
 
     h.state_mut().config.mcp_enabled = true;
     h.run_steps(2);
-    // On, but this pane has not been granted.
+    // On, but taken away from this pane.
+    h.state_mut().set_focused_agent_access(Access::None);
+    h.run_steps(2);
     assert_eq!(
         call(host.as_ref(), "list_sessions", json!({}))["content"][0]["text"],
         "[]"
@@ -1793,4 +1795,128 @@ fn a_host_known_with_a_different_key_says_so() {
     h.run_steps(3);
     h.get_by_label("This host is known with a different key");
     assert!(h.query_by_label("Unknown host key").is_none());
+}
+
+fn agent_call(
+    host: &dyn crate::mcp::Host,
+    name: &str,
+    arguments: serde_json::Value,
+) -> (bool, String) {
+    let reply = crate::mcp::handle(
+        host,
+        &serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": name, "arguments": arguments } }),
+    )
+    .unwrap();
+    (
+        reply["result"]["isError"].as_bool().unwrap_or(false),
+        reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string(),
+    )
+}
+
+fn live_agent_pane() -> (
+    Harness<'static, App>,
+    std::sync::Arc<dyn crate::mcp::Host>,
+    u64,
+) {
+    let mut s = sample();
+    s.app.add_demo_tab("core-sw1", Some(s.core_sw), b"");
+    s.app.config.mcp_enabled = true;
+    s.app.set_focused_live_for_test(true);
+    let host = s.app.agent_host();
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    let id = serde_json::from_str::<serde_json::Value>(
+        &agent_call(host.as_ref(), "list_sessions", serde_json::json!({})).1,
+    )
+    .unwrap()[0]["session"]
+        .as_u64()
+        .unwrap();
+    (h, host, id)
+}
+
+#[test]
+fn a_new_pane_asks_and_a_person_decides() {
+    use serde_json::json;
+    let (mut h, host, id) = live_agent_pane();
+    let (error, text) = agent_call(
+        host.as_ref(),
+        "send_text",
+        json!({ "session": id, "text": "reload\n" }),
+    );
+    assert!(!error, "{text}");
+    assert!(text.contains("Waiting"));
+    h.run_steps(3);
+    h.get_by_label("An agent wants to send this to core-sw1");
+    assert_eq!(
+        agent_call(host.as_ref(), "get_proposal", json!({ "proposal": 1 })).1,
+        "pending"
+    );
+    h.get_by_label("Deny").click();
+    h.run_steps(3);
+    assert_eq!(
+        agent_call(host.as_ref(), "get_proposal", json!({ "proposal": 1 })).1,
+        "denied"
+    );
+
+    agent_call(
+        host.as_ref(),
+        "send_text",
+        json!({ "session": id, "text": "show clock\n" }),
+    );
+    h.run_steps(3);
+    h.get_by_label("Approve").click();
+    h.run_steps(3);
+    assert_eq!(
+        agent_call(host.as_ref(), "get_proposal", json!({ "proposal": 2 })).1,
+        "sent"
+    );
+    assert!(h.query_by_label("Approve").is_none());
+}
+
+#[test]
+fn a_disconnect_ends_proposals_and_takes_back_full_control() {
+    use crate::mcp::Access;
+    use serde_json::json;
+    let (mut h, host, id) = live_agent_pane();
+    agent_call(
+        host.as_ref(),
+        "send_text",
+        json!({ "session": id, "text": "reload\n" }),
+    );
+    h.state_mut().set_focused_agent_access(Access::Control);
+    h.run_steps(3);
+    h.state_mut().set_focused_live_for_test(false);
+    h.run_steps(3);
+    assert_eq!(
+        agent_call(host.as_ref(), "get_proposal", json!({ "proposal": 1 })).1,
+        "expired"
+    );
+    assert_eq!(h.state().focused_agent_access_for_test(), Access::Ask);
+    // Coming back does not restore it.
+    h.state_mut().set_focused_live_for_test(true);
+    h.run_steps(3);
+    assert_eq!(h.state().focused_agent_access_for_test(), Access::Ask);
+}
+
+#[test]
+fn proposal_keys_cannot_approve() {
+    use serde_json::json;
+    let (mut h, host, id) = live_agent_pane();
+    agent_call(
+        host.as_ref(),
+        "send_text",
+        json!({ "session": id, "text": "reload\n" }),
+    );
+    h.run_steps(3);
+    h.key_press(egui::Key::Enter);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert_eq!(
+        agent_call(host.as_ref(), "get_proposal", json!({ "proposal": 1 })).1,
+        "pending"
+    );
 }

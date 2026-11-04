@@ -75,9 +75,8 @@ case "$name" in
     cp target/release/linecon.exe "dist/linecon-$name.exe"
     ;;
   macos-*)
-    # The release's own number where there is one. CFBundleVersion only allows digits and dots.
-    version=${LINECON_RELEASE#v}
-    version=${version:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}
+    # CFBundleVersion only allows digits and dots, so no prerelease suffix.
+    version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
     app=dist/linecon0.app
     mkdir -p "$app/Contents/MacOS"
     cp target/release/linecon "$app/Contents/MacOS/linecon"

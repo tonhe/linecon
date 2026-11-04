@@ -17,7 +17,35 @@ pub enum Access {
     #[default]
     None,
     Read,
+    /// Can read, and propose input that a person approves or denies.
+    Ask,
+    /// Can type directly. Lasts until the connection drops.
     Control,
+}
+
+/// Removes what makes text look different from what would be sent. A person approves what
+/// they read, so it must not be able to lie about itself.
+pub fn sanitize_input(text: &str) -> String {
+    text.chars()
+        .filter(|c| {
+            !matches!(
+                *c as u32,
+                0x00 | 0x061C | 0x200E | 0x200F | 0x2028 | 0x2029 | 0x202A..=0x202E | 0x2066..=0x2069 | 0xFEFF
+            )
+        })
+        .collect()
+}
+
+/// Shows input as someone reviewing it needs to see it, with control characters visible.
+pub fn display_input(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '\n' => "\u{23ce}\n".to_string(),
+            c if (c as u32) < 0x20 => char::from_u32(0x2400 + c as u32).unwrap_or('?').to_string(),
+            '\u{7f}' => "\u{2421}".to_string(),
+            c => c.to_string(),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +64,10 @@ pub trait Host: Send + Sync {
     fn panes(&self) -> Vec<PaneInfo>;
     fn read_screen(&self, id: u64, scrollback: usize) -> Option<String>;
     fn queue_input(&self, id: u64, data: Vec<u8>);
+    /// Asks a person to approve input. Returns the proposal's id.
+    fn propose_input(&self, id: u64, text: String) -> Result<u64, String>;
+    /// `pending`, `sent`, `denied` or `expired`.
+    fn proposal_status(&self, proposal: u64) -> Option<&'static str>;
 }
 
 const MAX_INPUT: usize = 64 * 1024;
@@ -79,7 +111,7 @@ fn tools() -> Value {
         },
         {
             "name": "send_text",
-            "description": "Type text into a session the user granted control of, as if at the keyboard. Commands take effect on live equipment. Include a newline to press Enter.",
+            "description": "Type text into a session. With control this is sent as if at the keyboard. In an asking session it becomes a proposal the user approves or denies: check it with get_proposal. Commands take effect on live equipment. Include a newline to press Enter.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -87,6 +119,16 @@ fn tools() -> Value {
                     "text": { "type": "string" }
                 },
                 "required": ["session", "text"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "get_proposal",
+            "description": "Check input proposed with send_text: pending, sent, denied or expired.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "proposal": { "type": "integer" } },
+                "required": ["proposal"],
                 "additionalProperties": false
             }
         }
@@ -115,7 +157,11 @@ fn call_tool(host: &dyn Host, params: &Value) -> Value {
                     json!({
                         "session": p.id,
                         "name": p.name,
-                        "access": if p.access == Access::Control { "control" } else { "read" },
+                        "access": match p.access {
+                            Access::Control => "control",
+                            Access::Ask => "ask",
+                            _ => "read",
+                        },
                         "connected": p.connected,
                         "waiting_for_user": p.waiting_for_user,
                     })
@@ -150,7 +196,7 @@ fn call_tool(host: &dyn Host, params: &Value) -> Value {
             let Some(pane) = visible(host, id) else {
                 return tool_error(NO_ACCESS);
             };
-            if pane.access != Access::Control {
+            if !matches!(pane.access, Access::Control | Access::Ask) {
                 return tool_error("The user granted read access only for this session.");
             }
             if pane.waiting_for_user {
@@ -162,11 +208,31 @@ fn call_tool(host: &dyn Host, params: &Value) -> Value {
             if text.len() > MAX_INPUT {
                 return tool_error("text is too long");
             }
+            let text = sanitize_input(text);
+            if pane.access == Access::Ask {
+                return match host.propose_input(id, text) {
+                    Ok(proposal) => tool_text(format!(
+                        "Waiting for the user to approve this. Check proposal {proposal} with \
+                         get_proposal."
+                    )),
+                    Err(e) => tool_error(&e),
+                };
+            }
             // A terminal's Enter is a carriage return.
             let data = text.replace("\r\n", "\r").replace('\n', "\r").into_bytes();
             let sent = data.len();
             host.queue_input(id, data);
             tool_text(format!("Sent {sent} bytes."))
+        }
+        Some("get_proposal") => {
+            let status = arguments
+                .get("proposal")
+                .and_then(Value::as_u64)
+                .and_then(|proposal| host.proposal_status(proposal));
+            match status {
+                Some(status) => tool_text(status.to_string()),
+                None => tool_error("No such proposal."),
+            }
         }
         _ => tool_error("Unknown tool."),
     }
@@ -394,6 +460,7 @@ mod tests {
     struct Fake {
         panes: Vec<PaneInfo>,
         sent: Mutex<Vec<(u64, Vec<u8>)>>,
+        proposed: Mutex<Vec<(u64, String)>>,
     }
 
     impl Host for Fake {
@@ -405,6 +472,13 @@ mod tests {
         }
         fn queue_input(&self, id: u64, data: Vec<u8>) {
             self.sent.lock().unwrap().push((id, data));
+        }
+        fn propose_input(&self, id: u64, text: String) -> Result<u64, String> {
+            self.proposed.lock().unwrap().push((id, text));
+            Ok(41)
+        }
+        fn proposal_status(&self, proposal: u64) -> Option<&'static str> {
+            (proposal == 41).then_some("pending")
         }
     }
 
@@ -424,6 +498,7 @@ mod tests {
                 pane(1, Access::None),
                 pane(2, Access::Read),
                 pane(3, Access::Control),
+                pane(4, Access::Ask),
             ],
             ..Default::default()
         }
@@ -441,6 +516,35 @@ mod tests {
             result["isError"].as_bool().unwrap_or(false),
             result["content"][0]["text"].as_str().unwrap().to_string(),
         )
+    }
+
+    #[test]
+    fn an_asking_session_proposes_and_sends_nothing() {
+        let h = host();
+        let (error, text) = call(&h, "send_text", json!({ "session": 4, "text": "reload\n" }));
+        assert!(!error, "{text}");
+        assert!(text.contains("41"), "{text}");
+        assert!(h.sent.lock().unwrap().is_empty());
+        assert_eq!(*h.proposed.lock().unwrap(), [(4, "reload\n".to_string())]);
+        assert_eq!(
+            call(&h, "get_proposal", json!({ "proposal": 41 })).1,
+            "pending"
+        );
+        assert!(call(&h, "get_proposal", json!({ "proposal": 9 })).0);
+    }
+
+    #[test]
+    fn read_only_sessions_cannot_propose() {
+        let h = host();
+        assert!(call(&h, "send_text", json!({ "session": 2, "text": "x" })).0);
+        assert!(h.proposed.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn reviewed_text_cannot_hide_what_it_sends() {
+        assert_eq!(sanitize_input("a\u{202e}b\0c\u{2028}d"), "abcd");
+        assert_eq!(sanitize_input("keep\ttab\x1b"), "keep\ttab\x1b");
+        assert_eq!(display_input("a\x03\n"), "a\u{2403}\u{23ce}\n");
     }
 
     #[test]
@@ -558,7 +662,10 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["list_sessions", "read_screen", "send_text"]);
+        assert_eq!(
+            names,
+            ["list_sessions", "read_screen", "send_text", "get_proposal"]
+        );
         assert!(call(&h, "open_connection", json!({ "host": "x" })).0);
     }
 

@@ -106,8 +106,10 @@ struct PaneEntry {
     answers: Vec<String>,
     /// The file browser, when opened for this pane.
     sftp: Option<SftpPane>,
-    /// What an agent may do here. Starts at none and is never saved.
+    /// What an agent may do here. Starts at asking and is never saved.
     agent: Access,
+    /// To notice a disconnect, which takes back full control.
+    agent_was_live: bool,
     /// Opened from the quick connect box, and not saved yet.
     quick: bool,
     /// "Remember this login" is ticked on the prompt card.
@@ -484,7 +486,8 @@ impl App {
             broadcast: false,
             answers: Vec::new(),
             sftp: None,
-            agent: Access::None,
+            agent: Access::Ask,
+            agent_was_live: false,
             quick: false,
             remember_login: false,
             pending_login: None,
@@ -962,6 +965,7 @@ impl App {
         if !self.config.mcp_enabled {
             self.agent_server = None;
             self.agent_view.update(Vec::new());
+            self.agent_view.expire_proposals(|_| false);
             return;
         }
         if self.agent_server.is_none() {
@@ -978,6 +982,14 @@ impl App {
                 }
             }
         }
+        for entry in self.panes.values_mut() {
+            let live = entry.pane.status() == Status::Live;
+            // Full control was given to this connection, not the next one.
+            if entry.agent_was_live && !live && entry.agent == Access::Control {
+                entry.agent = Access::Ask;
+            }
+            entry.agent_was_live = live;
+        }
         let panes = self
             .panes
             .iter()
@@ -993,6 +1005,12 @@ impl App {
             })
             .collect();
         self.agent_view.update(panes);
+        let open = |id: u64| {
+            self.panes
+                .get(&id)
+                .is_some_and(|e| e.agent != Access::None && e.pane.status() == Status::Live)
+        };
+        self.agent_view.expire_proposals(open);
         for (id, data) in self.agent_view.take_input() {
             // Checked again here: access may have been withdrawn since it was queued.
             if let Some(entry) = self.panes.get(&id).filter(|e| e.agent == Access::Control) {
@@ -1332,6 +1350,7 @@ impl App {
         self.unlock_overlay(&ctx, &chrome);
         self.poll_imported_passwords();
         self.imported_passphrase_overlay(&ctx, &chrome);
+        self.agent_proposal_overlay(&ctx, &chrome);
         self.poll_updates();
         self.update_overlay(&ctx, &chrome);
         self.save_if_needed();
@@ -1553,6 +1572,7 @@ impl App {
         if agent != Access::None {
             let (text, color) = match agent {
                 Access::Control => ("agent can type here", chrome.warning),
+                Access::Ask => ("agent can read this and ask to type", chrome.accent),
                 _ => ("agent can read this", chrome.accent),
             };
             ui.painter().rect_stroke(
@@ -2187,8 +2207,13 @@ impl App {
                 Command::SetAgentAccess(Access::Read),
             );
             add(
-                "Agent access for this pane: control",
-                "can type commands",
+                "Agent access for this pane: ask",
+                "can propose commands for you to approve",
+                Command::SetAgentAccess(Access::Ask),
+            );
+            add(
+                "Agent access for this pane: full control",
+                "can type without asking, until it disconnects",
                 Command::SetAgentAccess(Access::Control),
             );
         }
@@ -2770,6 +2795,73 @@ impl App {
                         self.dirty = true;
                     }
                 });
+        }
+    }
+
+    /// A person's answer to input an agent proposed. Mouse only, so that nothing typed at a
+    /// device can approve it by accident.
+    fn agent_proposal_overlay(&mut self, ctx: &egui::Context, chrome: &Chrome) {
+        let Some(proposal) = self.agent_view.next_pending() else {
+            return;
+        };
+        let mut approved = None;
+        let screen = ctx.content_rect();
+        egui::Area::new(egui::Id::unique("linecon-agent-proposal"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos2(screen.center().x - 240.0, screen.bottom() - 260.0))
+            .show(ctx, |ui| {
+                Frame::popup(ui.style())
+                    .fill(chrome.raised)
+                    .inner_margin(Margin::same(14))
+                    .show(ui, |ui| {
+                        ui.set_width(460.0);
+                        ui.label(
+                            RichText::new(format!(
+                                "An agent wants to send this to {}",
+                                proposal.pane_name
+                            ))
+                            .size(15.0),
+                        );
+                        ui.add_space(4.0);
+                        egui::ScrollArea::vertical()
+                            .max_height(120.0)
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(crate::mcp::display_input(&proposal.text))
+                                        .monospace()
+                                        .size(12.0),
+                                );
+                            });
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Approve").clicked() {
+                                approved = Some(true);
+                            }
+                            if ui.button("Deny").clicked() {
+                                approved = Some(false);
+                            }
+                        });
+                    });
+            });
+        match approved {
+            Some(true) => {
+                // Checked once more now that it matters.
+                let sent = self.panes.get(&proposal.pane).filter(|e| {
+                    matches!(e.agent, Access::Ask | Access::Control)
+                        && e.pane.status() == Status::Live
+                        && e.pane.shared.pending.lock().unwrap().is_none()
+                });
+                let status = if let Some(entry) = sent {
+                    let data = proposal.text.replace("\r\n", "\r").replace('\n', "\r");
+                    entry.pane.send(data.as_bytes());
+                    "sent"
+                } else {
+                    "expired"
+                };
+                self.agent_view.resolve_proposal(proposal.id, status);
+            }
+            Some(false) => self.agent_view.resolve_proposal(proposal.id, "denied"),
+            None => {}
         }
     }
 
@@ -3772,12 +3864,34 @@ struct AgentPane {
     shared: Arc<crate::pane::PaneShared>,
 }
 
+#[derive(Clone)]
+struct Proposal {
+    id: u64,
+    pane: u64,
+    pane_name: String,
+    text: String,
+    status: &'static str,
+    asked: Instant,
+}
+
+/// How long a proposal waits. Past this, what it was meant for may have moved on.
+const PROPOSAL_LIFETIME: Duration = Duration::from_secs(300);
+const MAX_PENDING_PROPOSALS: usize = 5;
+const MAX_REMEMBERED_PROPOSALS: usize = 100;
+
+#[derive(Default)]
+struct Proposals {
+    next: u64,
+    list: Vec<Proposal>,
+}
+
 /// What the agent server sees of the window: a copy refreshed each frame, plus a
 /// queue of input the window applies itself after checking access once more.
 #[derive(Default)]
 struct AgentView {
     panes: Mutex<Vec<AgentPane>>,
     input: Mutex<Vec<(u64, Vec<u8>)>>,
+    proposals: Mutex<Proposals>,
     wake: Mutex<Option<Box<dyn Fn() + Send>>>,
 }
 
@@ -3788,6 +3902,33 @@ impl AgentView {
 
     fn take_input(&self) -> Vec<(u64, Vec<u8>)> {
         std::mem::take(&mut *self.input.lock().unwrap())
+    }
+
+    /// Ends proposals that have waited too long, or whose pane has gone or disconnected.
+    fn expire_proposals(&self, open: impl Fn(u64) -> bool) {
+        let mut proposals = self.proposals.lock().unwrap();
+        for proposal in &mut proposals.list {
+            let stale = proposal.asked.elapsed() > PROPOSAL_LIFETIME || !open(proposal.pane);
+            if proposal.status == "pending" && stale {
+                proposal.status = "expired";
+            }
+        }
+    }
+
+    fn next_pending(&self) -> Option<Proposal> {
+        let proposals = self.proposals.lock().unwrap();
+        proposals
+            .list
+            .iter()
+            .find(|p| p.status == "pending")
+            .cloned()
+    }
+
+    fn resolve_proposal(&self, id: u64, status: &'static str) {
+        let mut proposals = self.proposals.lock().unwrap();
+        if let Some(proposal) = proposals.list.iter_mut().find(|p| p.id == id) {
+            proposal.status = status;
+        }
     }
 }
 
@@ -3813,6 +3954,52 @@ impl Host for AgentView {
         if let Some(wake) = self.wake.lock().unwrap().as_ref() {
             wake();
         }
+    }
+
+    fn propose_input(&self, id: u64, text: String) -> Result<u64, String> {
+        let pane_name = self
+            .panes
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|p| p.info.id == id)
+            .map(|p| p.info.name.clone())
+            .unwrap_or_default();
+        let proposal = {
+            let mut proposals = self.proposals.lock().unwrap();
+            let waiting = proposals
+                .list
+                .iter()
+                .filter(|p| p.pane == id && p.status == "pending")
+                .count();
+            if waiting >= MAX_PENDING_PROPOSALS {
+                return Err("Too many proposals are waiting for the user already.".to_string());
+            }
+            proposals.next += 1;
+            let proposal = proposals.next;
+            proposals.list.push(Proposal {
+                id: proposal,
+                pane: id,
+                pane_name,
+                text,
+                status: "pending",
+                asked: Instant::now(),
+            });
+            if proposals.list.len() > MAX_REMEMBERED_PROPOSALS {
+                proposals.list.remove(0);
+            }
+            proposal
+        };
+        if let Some(wake) = self.wake.lock().unwrap().as_ref() {
+            wake();
+        }
+        Ok(proposal)
+    }
+
+    fn proposal_status(&self, proposal: u64) -> Option<&'static str> {
+        let proposals = self.proposals.lock().unwrap();
+        let found = proposals.list.iter().find(|p| p.id == proposal)?;
+        Some(found.status)
     }
 }
 
@@ -4668,6 +4855,19 @@ impl App {
     pub fn set_focused_agent_access(&mut self, access: Access) {
         let id = self.focused_pane().unwrap();
         self.panes.get_mut(&id).unwrap().agent = access;
+    }
+
+    pub fn set_focused_live_for_test(&mut self, live: bool) {
+        let id = self.focused_pane().unwrap();
+        *self.panes[&id].pane.shared.status.lock().unwrap() = if live {
+            Status::Live
+        } else {
+            Status::Closed { reason: None }
+        };
+    }
+
+    pub fn focused_agent_access_for_test(&self) -> Access {
+        self.panes[&self.focused_pane().unwrap()].agent
     }
 
     pub fn agent_host(&self) -> Arc<dyn Host> {

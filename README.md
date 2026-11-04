@@ -96,7 +96,10 @@ choose. These are live sessions on real equipment, and output from a device coul
 instruct the agent, so everything is opt-in:
 
 - The server is off until you start it from the command palette.
-- Each pane starts with no access. You grant read or control one pane at a time, and it is never saved.
+- Once it is running, an agent can read each pane and propose input, and you approve or deny every proposal with the
+  mouse. Proposals expire after five minutes or on disconnect.
+- You can change a pane to none, read only or full control from the palette. Full control lasts until that connection
+  drops, including an automatic reconnect, and no mode is ever saved. Agents have no way to change a mode.
 - A pane with access is marked on screen, and input is refused while it is waiting on a password.
 - Agents cannot open connections, read saved passwords or change settings.
 
