@@ -59,7 +59,8 @@
 
 ## Known gaps
 - The window is driven automatically on Linux and has been run on macOS by hand. Windows has only been run headlessly.
-- PuTTY reads .ppk key files only, so an OpenSSH key file will not load directly; keys need an agent.
+- OpenSSH private keys are converted once for PuTTY, kept beside the settings. Keys PuTTY cannot import, such as hardware-backed
+  ones, still need an agent.
 - PuTTY does not read ~/.ssh/config. Use the import command.
 - Windows and macOS do not run the Docker legacy test, because hosted runners lack a Linux
   container runtime. They run the loopback tests, and the protocol code is shared.

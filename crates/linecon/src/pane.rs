@@ -6,11 +6,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::openssh_keys::Prepared;
 use linecon_config::Id;
 use linecon_engine::algorithms::{AlgorithmPolicy, SshVersion};
 use linecon_engine::negotiation::{self, NegotiationFailure};
 use linecon_engine::settings::Settings;
-use linecon_engine::{Event, HostKeyPrompt, HostKeyVerdict, Prompt, RecvError, Session, Special};
+use linecon_engine::{
+    Event, HostKeyPrompt, HostKeyVerdict, Prompt, PromptField, RecvError, Session, Special,
+};
 
 use zeroize::Zeroizing;
 
@@ -79,6 +82,12 @@ pub struct PaneShared {
     pub ever_live: AtomicBool,
     /// May auto-reconnect act on the current closure?
     pub may_retry: AtomicBool,
+    /// The card on screen is asking for an OpenSSH key's passphrase, not PuTTY.
+    asking_for_key: AtomicBool,
+    /// Answered, so connect again.
+    retry_with_key: AtomicBool,
+    /// Used to convert the key, then to answer PuTTY when it asks for the same thing.
+    key_passphrase: Mutex<Option<Zeroizing<String>>>,
     /// The device only speaks SSH-1, and the legacy toggle allows it.
     pub wants_ssh1: AtomicBool,
 }
@@ -115,6 +124,9 @@ impl Pane {
             stop: AtomicBool::new(false),
             ever_live: AtomicBool::new(false),
             may_retry: AtomicBool::new(false),
+            asking_for_key: AtomicBool::new(false),
+            retry_with_key: AtomicBool::new(false),
+            key_passphrase: Mutex::new(None),
             wants_ssh1: AtomicBool::new(false),
         });
         let mut pane = Self {
@@ -147,6 +159,9 @@ impl Pane {
             stop: AtomicBool::new(false),
             ever_live: AtomicBool::new(false),
             may_retry: AtomicBool::new(false),
+            asking_for_key: AtomicBool::new(false),
+            retry_with_key: AtomicBool::new(false),
+            key_passphrase: Mutex::new(None),
             wants_ssh1: AtomicBool::new(false),
         });
         Self {
@@ -184,6 +199,9 @@ impl Pane {
         *self.shared.failure.lock().unwrap() = None;
 
         let mut settings = self.spec.settings.clone();
+        if !self.use_converted_key(&mut settings) {
+            return;
+        }
         let size = self.shared.core.lock().unwrap().size();
         settings.terminal_size(size.cols as u16, size.rows as u16);
         match Session::open(&settings) {
@@ -202,6 +220,52 @@ impl Pane {
                 *self.shared.status.lock().unwrap() = Status::Closed {
                     reason: Some(e.to_string()),
                 };
+            }
+        }
+    }
+
+    /// Points the settings at a key PuTTY can read. False if that has to wait for an answer,
+    /// or could not be done.
+    fn use_converted_key(&mut self, settings: &mut Settings) -> bool {
+        let Some(path) = settings.get("PublicKeyFile").map(str::to_string) else {
+            return true;
+        };
+        let passphrase = self.shared.key_passphrase.lock().unwrap().clone();
+        let ask = |note: &str| {
+            self.shared.asking_for_key.store(true, Ordering::SeqCst);
+            *self.shared.pending.lock().unwrap() = Some(Pending::Prompt(Prompt {
+                name: Some("SSH key passphrase".to_string()),
+                instruction: Some(note.to_string()),
+                from_server: false,
+                fields: vec![PromptField {
+                    text: format!("Passphrase for {path}: "),
+                    echo: false,
+                }],
+            }));
+        };
+        match crate::openssh_keys::prepare(&path, passphrase.as_ref().map(|p| p.as_str())) {
+            Prepared::AsIs => true,
+            Prepared::Converted(out) => {
+                settings.set("PublicKeyFile", out.display().to_string());
+                true
+            }
+            Prepared::NeedsPassphrase => {
+                ask(
+                    "This OpenSSH key is protected. It is converted once for PuTTY, keeping the \
+                     same passphrase.",
+                );
+                false
+            }
+            Prepared::WrongPassphrase => {
+                *self.shared.key_passphrase.lock().unwrap() = None;
+                ask("That passphrase does not open this key.");
+                false
+            }
+            Prepared::Failed(reason) => {
+                *self.shared.status.lock().unwrap() = Status::Closed {
+                    reason: Some(reason),
+                };
+                false
             }
         }
     }
@@ -246,6 +310,13 @@ impl Pane {
 
     pub fn answer_prompt(&self, answers: &[&str]) {
         *self.shared.pending.lock().unwrap() = None;
+        if self.shared.asking_for_key.swap(false, Ordering::SeqCst) {
+            let answer = answers.first().copied().unwrap_or_default();
+            *self.shared.key_passphrase.lock().unwrap() = Some(Zeroizing::new(answer.to_string()));
+            self.shared.retry_with_key.store(true, Ordering::SeqCst);
+            (self.repaint)();
+            return;
+        }
         if let Some(session) = &self.session {
             session.answer_prompt(answers);
         }
@@ -253,6 +324,12 @@ impl Pane {
 
     pub fn cancel_prompt(&self) {
         *self.shared.pending.lock().unwrap() = None;
+        if self.shared.asking_for_key.swap(false, Ordering::SeqCst) {
+            *self.shared.status.lock().unwrap() = Status::Closed {
+                reason: Some("the key's passphrase was not given".to_string()),
+            };
+            return;
+        }
         if let Some(session) = &self.session {
             session.cancel_prompt();
         }
@@ -268,6 +345,10 @@ impl Pane {
     /// Follow-up after a closure: fall back to SSH-1 if that is what the device
     /// needs, otherwise reconnect on a schedule if this session asked for that.
     pub fn tick_reconnect(&mut self) {
+        if self.shared.retry_with_key.swap(false, Ordering::SeqCst) {
+            self.connect();
+            return;
+        }
         if self.shared.wants_ssh1.swap(false, Ordering::SeqCst) {
             self.spec.policy.version = SshVersion::V1;
             let policy = self.spec.policy.clone();
@@ -399,6 +480,14 @@ fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint:
             }
             Event::Prompt(prompt) => {
                 let through_proxy = spec.settings.get("ProxyHost").is_some();
+                // PuTTY asking for the passphrase just typed for the conversion.
+                let key_passphrase = (!prompt.from_server && prompt.fields.len() == 1)
+                    .then(|| shared.key_passphrase.lock().unwrap().take())
+                    .flatten();
+                if let Some(passphrase) = key_passphrase {
+                    session.answer_prompt(&[passphrase.as_str()]);
+                    continue;
+                }
                 let saved = spec
                     .password
                     .as_ref()

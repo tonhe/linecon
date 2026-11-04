@@ -2005,3 +2005,52 @@ fn a_failed_save_is_tried_again() {
     let saved = std::fs::read_to_string(place.config_file()).unwrap();
     assert!(saved.contains("kept"));
 }
+
+/// An OpenSSH key asks for its passphrase through the same card as any other question.
+#[test]
+fn an_encrypted_openssh_key_asks_before_connecting() {
+    use crate::pane::{Pane, Pending, Status};
+    let dir = std::env::temp_dir().join(format!("linecon-key-card-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let key = dir.join("id");
+    let made = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "sesame", "-f"])
+        .arg(&key)
+        .status();
+    if !made.is_ok_and(|s| s.success()) {
+        eprintln!("SKIPPED: no ssh-keygen");
+        return;
+    }
+    crate::openssh_keys::set_cache_dir(
+        std::env::temp_dir().join(format!("linecon-key-cache-{}", std::process::id())),
+    );
+    let app = App::new(location());
+    let target = Target {
+        host: "127.0.0.1".to_string(),
+        port: Some(1),
+        ..Default::default()
+    };
+    let mut spec = app.spec_for_test("sw", &target);
+    spec.settings
+        .set("PublicKeyFile", key.display().to_string());
+    let mut pane = Pane::new(spec, std::sync::Arc::new(|| {}));
+    pane.connect();
+    let question = |pane: &Pane| match &*pane.shared.pending.lock().unwrap() {
+        Some(Pending::Prompt(p)) => Some(p.instruction.clone().unwrap_or_default()),
+        _ => None,
+    };
+    assert!(question(&pane).expect("a question").contains("protected"));
+    assert_eq!(pane.status(), Status::Connecting);
+
+    pane.answer_prompt(&["wrong"]);
+    pane.tick_reconnect();
+    assert!(question(&pane)
+        .expect("asks again")
+        .contains("does not open"));
+
+    pane.answer_prompt(&["sesame"]);
+    pane.tick_reconnect();
+    assert!(question(&pane).is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}

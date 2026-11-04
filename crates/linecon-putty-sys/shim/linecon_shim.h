@@ -48,6 +48,12 @@ typedef struct {
     const unsigned char *prompt_echo;
 } lc_event;
 
+/* OpenSSH private keys, which PuTTY only reads once converted. Engine thread only. */
+int lc_key_openssh_status(const char *path); /* 0 other, 1 plain, 2 encrypted */
+/* 0 done, 1 wrong passphrase, 2 failed with *error_out set (free with lc_string_free). */
+int lc_key_convert(const char *path, const char *passphrase, const char *out,
+                   char **error_out);
+
 /* Host key store. check returns 0 match, 1 unknown, 2 changed. */
 typedef struct {
     size_t (*on_event)(const lc_event *ev); /* LC_EV_OUTPUT: returns backlog */

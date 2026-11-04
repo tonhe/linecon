@@ -753,3 +753,51 @@ Filename *platform_default_filename(const char *name)
 
 const bool share_can_be_downstream = true;
 const bool share_can_be_upstream = true;
+
+int lc_key_openssh_status(const char *path)
+{
+    Filename *file = filename_from_str(path);
+    int type = key_type(file);
+    int status = 0;
+    if (import_possible(type) && import_target_type(type) == SSH_KEYTYPE_SSH2) {
+        char *comment = NULL;
+        status = import_encrypted(file, type, &comment) ? 2 : 1;
+        sfree(comment);
+    }
+    filename_free(file);
+    return status;
+}
+
+int lc_key_convert(const char *path, const char *passphrase, const char *out,
+                   char **error_out)
+{
+    Filename *in_file = filename_from_str(path);
+    Filename *out_file = filename_from_str(out);
+    const char *error = NULL;
+    int result = 2;
+    int type = key_type(in_file);
+    ssh2_userkey *key = import_ssh2(in_file, type, passphrase, &error);
+    /* The OpenSSH format's reader reports this as a plain error. */
+    if (key == SSH2_WRONG_PASSPHRASE ||
+        (!key && error && !strcmp(error, "decryption check failed"))) {
+        result = 1;
+    } else if (key) {
+        /* Saving with a passphrase draws random salt. */
+        random_ref();
+        if (ppk_save_f(out_file, key, passphrase && *passphrase ? passphrase : NULL,
+                       &ppk_save_default_parameters)) {
+            result = 0;
+        } else {
+            error = "could not write the converted key";
+        }
+        random_unref();
+        ssh_key_free(key->key);
+        sfree(key->comment);
+        sfree(key);
+    }
+    if (result == 2 && error_out)
+        *error_out = dupstr(error ? error : "this key could not be read");
+    filename_free(in_file);
+    filename_free(out_file);
+    return result;
+}

@@ -7,6 +7,7 @@ mod app;
 mod cli;
 mod keys;
 mod mcp;
+mod openssh_keys;
 mod pane;
 mod serial_ports;
 mod session_log;

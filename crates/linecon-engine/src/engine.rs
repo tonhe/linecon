@@ -299,6 +299,75 @@ fn post(cmd: Command) {
     unsafe { sys::lc_engine_wake() };
 }
 
+/// What a key file needs before PuTTY can use it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyFormat {
+    /// PuTTY's own format, or something it will explain the problem with itself.
+    Usable,
+    OpenSsh {
+        encrypted: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyConvertError {
+    WrongPassphrase,
+    Failed(String),
+}
+
+fn on_engine<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (tx, rx) = mpsc::channel();
+    post(Box::new(move |_| {
+        let _ = tx.send(work());
+    }));
+    rx.recv().ok()
+}
+
+/// Says whether this key file is one PuTTY has to have converted.
+pub fn key_format(path: &str) -> KeyFormat {
+    let Ok(path) = CString::new(path) else {
+        return KeyFormat::Usable;
+    };
+    let status = on_engine(move || unsafe { sys::lc_key_openssh_status(path.as_ptr()) });
+    match status {
+        Some(1) => KeyFormat::OpenSsh { encrypted: false },
+        Some(2) => KeyFormat::OpenSsh { encrypted: true },
+        _ => KeyFormat::Usable,
+    }
+}
+
+/// Writes an OpenSSH key out in PuTTY's format, protected by the same passphrase.
+pub fn convert_key(path: &str, passphrase: &str, out: &str) -> Result<(), KeyConvertError> {
+    let text = |s: &str| {
+        CString::new(s).map_err(|_| KeyConvertError::Failed("a NUL byte in a path".to_string()))
+    };
+    let (path, out) = (text(path)?, text(out)?);
+    let passphrase =
+        Zeroizing::new(CString::new(passphrase).map_err(|_| KeyConvertError::WrongPassphrase)?);
+    let result = on_engine(move || unsafe {
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let status =
+            sys::lc_key_convert(path.as_ptr(), passphrase.as_ptr(), out.as_ptr(), &mut error);
+        let message = opt_string(error);
+        if !error.is_null() {
+            sys::lc_free_string(error);
+        }
+        (status, message)
+    });
+    match result {
+        Some((0, _)) => Ok(()),
+        Some((1, _)) => Err(KeyConvertError::WrongPassphrase),
+        Some((_, message)) => {
+            Err(KeyConvertError::Failed(message.unwrap_or_else(|| {
+                "this key could not be read".to_string()
+            })))
+        }
+        None => Err(KeyConvertError::Failed(
+            "the protocol engine is not running".to_string(),
+        )),
+    }
+}
+
 /// An open session. Dropping it closes the connection.
 pub struct Session {
     id: u64,

@@ -317,6 +317,7 @@ impl App {
             Err(e) => (Config::default(), Some(e.to_string())),
         };
         let instance_lock = take_instance_lock(&location);
+        crate::openssh_keys::set_cache_dir(location.config_file().with_file_name("converted-keys"));
         if instance_lock.is_none() && config_error.is_none() {
             config_error = Some(
                 "Another linecon0 window has these settings open, so changes here will not be \

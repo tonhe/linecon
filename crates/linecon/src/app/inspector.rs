@@ -792,7 +792,12 @@ impl App {
                 edited.name = edited.username.clone();
             }
             changed |= field(ui, "Login name", &mut edited.name, "");
-            changed |= field(ui, "Key file (PuTTY .ppk)", &mut edited.key_file, "None");
+            changed |= field(
+                ui,
+                "Key file (.ppk or OpenSSH)",
+                &mut edited.key_file,
+                "None",
+            );
             changed |= ui
                 .checkbox(&mut edited.use_agent, "Use SSH agent")
                 .changed();

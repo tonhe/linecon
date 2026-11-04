@@ -15,6 +15,6 @@ pub mod sftp;
 pub use linecon_putty_sys::{PUTTY_COMMIT, VERSION};
 
 pub use engine::{
-    set_hostkey_store, Event, HostKeyPrompt, HostKeyVerdict, OpenError, Prompt, PromptField,
-    RecvError, Session, Special,
+    convert_key, key_format, set_hostkey_store, Event, HostKeyPrompt, HostKeyVerdict,
+    KeyConvertError, KeyFormat, OpenError, Prompt, PromptField, RecvError, Session, Special,
 };

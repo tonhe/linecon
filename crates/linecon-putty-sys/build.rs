@@ -115,6 +115,8 @@ fn main() {
         .file("shim/linecon_shim.c")
         .file("shim/shim_storage.c")
         .file(putty.join("stubs/no-lineedit.c"))
+        // Reading OpenSSH key files. Plink does not need it, so its build leaves it out.
+        .file(putty.join("import.c"))
         .compile("linecon_shim");
 
     for lib in PUTTY_LIBS {

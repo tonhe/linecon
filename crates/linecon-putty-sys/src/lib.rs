@@ -70,6 +70,13 @@ extern "C" {
     pub fn lc_engine_run();
     pub fn lc_engine_stop();
     pub fn lc_engine_wake();
+    pub fn lc_key_openssh_status(path: *const c_char) -> c_int;
+    pub fn lc_key_convert(
+        path: *const c_char,
+        passphrase: *const c_char,
+        out: *const c_char,
+        error_out: *mut *mut c_char,
+    ) -> c_int;
     pub fn lc_session_open(
         settings: *const lc_setting,
         n: usize,

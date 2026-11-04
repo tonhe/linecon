@@ -129,6 +129,10 @@ impl App {
         self.panes.get_mut(&id).unwrap().agent = access;
     }
 
+    pub fn spec_for_test(&self, name: &str, target: &Target) -> PaneSpec {
+        self.spec_for(name, None, target, "lab")
+    }
+
     pub fn mark_dirty_for_test(&mut self) {
         self.dirty = true;
     }
