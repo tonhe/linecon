@@ -183,15 +183,22 @@ enum Command {
 const SAVE_RETRY: Duration = Duration::from_secs(5);
 
 /// Only one window at a time can own the config folder. The lock goes when the process does,
-/// however it ends.
-fn take_instance_lock(location: &ConfigLocation) -> Result<std::fs::File, ()> {
+/// however it ends. `None` means another window holds it. A place where locks do not work at
+/// all, such as some network drives, must not stop every save, so that counts as ours.
+fn take_instance_lock(location: &ConfigLocation) -> Option<Option<std::fs::File>> {
     let path = location.config_file().with_file_name("instance.lock");
-    if let Some(dir) = path.parent() {
-        linecon_engine::private_files::create_dir(dir).map_err(|_| ())?;
+    let opened = path
+        .parent()
+        .map_or(Ok(()), linecon_engine::private_files::create_dir)
+        .and_then(|()| linecon_engine::private_files::open_for_lock(&path));
+    let Ok(file) = opened else {
+        return Some(None);
+    };
+    match file.try_lock() {
+        Ok(()) => Some(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => None,
+        Err(std::fs::TryLockError::Error(_)) => Some(None),
     }
-    let file = linecon_engine::private_files::append(&path).map_err(|_| ())?;
-    file.try_lock().map_err(|_| ())?;
-    Ok(file)
 }
 
 pub struct App {
@@ -310,7 +317,7 @@ impl App {
             Err(e) => (Config::default(), Some(e.to_string())),
         };
         let instance_lock = take_instance_lock(&location);
-        if instance_lock.is_err() && config_error.is_none() {
+        if instance_lock.is_none() && config_error.is_none() {
             config_error = Some(
                 "Another linecon0 window has these settings open, so changes here will not be \
                  saved."
@@ -340,7 +347,7 @@ impl App {
             config_error,
             save_error: None,
             last_failed_save: None,
-            _instance_lock: instance_lock.ok(),
+            _instance_lock: instance_lock.flatten(),
             error: known_hosts_error,
             info: None,
             update_key: update::public_key()

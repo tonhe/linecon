@@ -33,6 +33,12 @@ pub fn create(path: &Path) -> io::Result<File> {
     options().write(true).truncate(true).open(path)
 }
 
+/// Opens a file only its owner can read, for locking. Windows will not lock a file opened
+/// only for appending.
+pub fn open_for_lock(path: &Path) -> io::Result<File> {
+    options().read(true).write(true).truncate(false).open(path)
+}
+
 /// Opens a file only its owner can read, for adding to.
 pub fn append(path: &Path) -> io::Result<File> {
     options().append(true).open(path)
