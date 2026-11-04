@@ -94,6 +94,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          # Only the builds: CI's screenshots are artifacts too.
+          pattern: linecon-*
           path: dist
           merge-multiple: true
       - name: Publish release
