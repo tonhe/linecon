@@ -100,7 +100,8 @@ case "$name" in
     "$app/Contents/MacOS/linecon" --version
     (cd dist && ditto -c -k --keepParent linecon0.app "linecon0-$name.app.zip")
     rm -rf "$app"
-    tar -czf "dist/linecon-$name.tar.gz" -C "$tar_dir" linecon
+    # Named so it is not mistaken for the app: this one is for terminal use.
+    tar -czf "dist/linecon-$name-cli.tar.gz" -C "$tar_dir" linecon
     ;;
   *)
     tar -czf "dist/linecon-$name.tar.gz" -C target/release linecon

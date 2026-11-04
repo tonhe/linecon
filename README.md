@@ -46,8 +46,8 @@ Downloads are on the [releases page](https://github.com/tonhe/linecon/releases).
 - **macOS**: unzip `linecon0-macos-*.app.zip` (`arm64` for Apple silicon, `x64` for Intel). Until releases
   are notarized, macOS blocks it at first. Either run
   `xattr -dr com.apple.quarantine linecon0.app`, or try to open it once and then choose
-  Open Anyway under System Settings > Privacy & Security. The `.tar.gz` is the same program as a
-  bare executable for terminal use.
+  Open Anyway under System Settings > Privacy & Security. `linecon-macos-*-cli.tar.gz` is the same
+  program as a bare executable for terminal use, with no app icon.
 - **Linux**: unpack `linecon-linux-*.tar.gz` and run `./linecon`.
 - **Windows**: run `linecon-windows-x64.exe`. SmartScreen may warn, since it is unsigned. See the
   [code signing policy](docs/code-signing-policy.md). A console window may flash when starting it from Explorer.
