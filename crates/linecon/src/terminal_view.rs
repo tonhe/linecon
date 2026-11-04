@@ -114,7 +114,11 @@ pub fn show(
     if response.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::Text);
     }
-    if response.clicked() || response.drag_started() {
+    if response.clicked()
+        || response.drag_started()
+        || response.clicked_by(PointerButton::Secondary)
+        || response.clicked_by(PointerButton::Middle)
+    {
         output.clicked = true;
         ui.ctx().memory_mut(|m| m.request_focus(id));
     }
@@ -143,16 +147,7 @@ pub fn show(
         });
         handle_keyboard(ui, pane, &mut output);
     }
-    handle_mouse(
-        ui,
-        &response,
-        pane,
-        rect,
-        origin,
-        cell,
-        selection_anchor,
-        focused,
-    );
+    handle_mouse(ui, &response, pane, rect, origin, cell, selection_anchor);
 
     let core = pane.shared.core.lock().unwrap();
     let term = &core.term;
@@ -427,7 +422,6 @@ fn handle_mouse(
     origin: egui::Pos2,
     cell: egui::Vec2,
     anchor: &mut Option<Point>,
-    focused: bool,
 ) {
     let ctx = ui.ctx().clone();
     let pointer = ctx.input(|i| i.pointer.latest_pos());
@@ -544,7 +538,12 @@ fn handle_mouse(
         copy_selection(&ctx, pane);
     } else if response.clicked_by(PointerButton::Primary) {
         pane.shared.core.lock().unwrap().term.selection = None;
-    } else if response.clicked_by(PointerButton::Middle) && focused {
+    } else if response.clicked_by(PointerButton::Middle)
+        || response.clicked_by(PointerButton::Secondary)
+    {
+        // Right-click pastes, as in PuTTY, which is what people arrive here expecting.
+        // It can land on a pane that is not focused yet, so that pane takes focus.
+        ctx.memory_mut(|m| m.request_focus(response.id));
         ctx.data_mut(|d| d.insert_temp(egui::Id::unique("linecon-paste-requested"), true));
         ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
     }

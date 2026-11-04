@@ -74,7 +74,7 @@ keeps config, known hosts and logs in a `linecon-data` folder beside it.
 | Ctrl+Shift+D / E | Split right / down |
 | Ctrl+Shift+W | Close pane |
 | Ctrl+Shift+F | Search scrollback |
-| Ctrl+Shift+C / V | Copy / paste |
+| Ctrl+Shift+C / V | Copy / paste (right-click also pastes, and selecting copies) |
 | Ctrl+Shift+R | Reconnect |
 | Alt+arrows | Move between panes |
 

@@ -1741,6 +1741,19 @@ impl App {
         );
         if response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
             if let Some((target, user)) = parse_quick_connect(&self.quick_connect) {
+                // This Enter was for the box. The new tab takes focus this same frame, and
+                // would otherwise send it to the device as the first thing it hears.
+                ui.input_mut(|i| {
+                    i.events.retain(|e| {
+                        !matches!(
+                            e,
+                            egui::Event::Key {
+                                key: Key::Enter,
+                                ..
+                            } | egui::Event::Text(_)
+                        )
+                    });
+                });
                 let name = if target.protocol == Protocol::Serial {
                     target.line.clone()
                 } else {

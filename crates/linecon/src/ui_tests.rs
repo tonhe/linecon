@@ -1497,3 +1497,37 @@ fn a_saved_password_stays_with_its_own_session() {
         Some("second-password")
     );
 }
+
+/// Enter in the quick connect box is for the box. It must not reach the device.
+#[test]
+fn the_enter_that_opens_a_quick_connection_is_not_sent_to_it() {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 64];
+        while let Ok(n) = stream.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut h = harness(App::new(location()));
+    h.run_steps(3);
+    h.get_by_role(egui::accesskit::Role::TextInput).focus();
+    h.run_steps(2);
+    h.get_by_role(egui::accesskit::Role::TextInput)
+        .type_text(&format!("raw://127.0.0.1:{port}"));
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(h.state().tab_count(), 1, "the connection did not open");
+    let got: Vec<u8> = rx.try_iter().flatten().collect();
+    assert!(got.is_empty(), "sent to the device on connect: {got:?}");
+}

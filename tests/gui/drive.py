@@ -386,6 +386,25 @@ def clipboard():
     shot("pasted")
 
 
+@step("right-click pastes, and asks first for several lines")
+def right_click_paste():
+    def set_clipboard(text):
+        p = subprocess.Popen(["xclip", "-selection", "clipboard", "-i"], stdin=subprocess.PIPE, text=True)
+        p.communicate(text)
+        time.sleep(0.3)
+    set_clipboard("show users")
+    click_xy(760, 400, button=3)
+    time.sleep(0.8)
+    key("Return")
+    wait("Line|User")
+    set_clipboard("show clock\nshow users\n")
+    click_xy(760, 400, button=3)
+    wait("Paste 2 lines")
+    shot("right-click-paste-confirm")
+    key("Escape")
+    gone("Paste 2 lines")
+
+
 @step("search finds text in scrollback")
 def search():
     key("ctrl+shift+f")
