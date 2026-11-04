@@ -6,6 +6,7 @@ mod model;
 mod paths;
 mod resolve;
 pub mod secrets;
+pub mod securecrt_crypto;
 mod store;
 
 pub use model::*;

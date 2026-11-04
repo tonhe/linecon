@@ -1,8 +1,8 @@
 # Code signing policy
 
-Windows releases of linecon0 are **not code signed yet**, so Windows warns about them. The project is applying to
-use the [SignPath Foundation](https://signpath.org) for free code signing. This page describes how releases will be
-handled once that is in place. macOS signing is described in [macos-signing.md](macos-signing.md).
+Windows releases of linecon0 are **not code signed yet**, so Windows warns about them. The project intends to reapply
+to the [SignPath Foundation](https://signpath.org) for free code signing. This page describes how releases will be
+signed and approved. macOS signing is described in [macos-signing.md](macos-signing.md).
 
 ## Team
 

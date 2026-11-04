@@ -195,3 +195,11 @@ A SHA-256 file on the same release page proves nothing if the release is tampere
 Ed25519 key held only in a repository secret, and the public key is built in. That key can sign anything, so anyone
 who can change the release workflow could use it: the protection is against a tampered release or download, not a
 compromised repository. macOS installs only notarized updates and otherwise links to the download page.
+
+## 2026-11-04: SecureCRT passwords are imported, decrypted
+
+Imports used to leave every saved password behind. SecureCRT users moving sessions would otherwise retype all of them,
+and the encryption is only as strong as the configuration passphrase, usually empty. They are decrypted once and go
+only to the secret store, never to the config file or a bundle. An inline password gets its own login so it cannot be
+sent to another device, and a SecureCRT credential stays shared because its owner chose that. The older `Password`
+format is not read, so those sessions ask.

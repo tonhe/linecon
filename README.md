@@ -54,8 +54,7 @@ Downloads are on the [releases page](https://github.com/tonhe/linecon/releases).
 
 ### Code signing
 
-linecon0 is applying to use the [SignPath Foundation](https://signpath.org) for free code signing of its Windows
-releases. Until that is approved, Windows releases are unsigned. See the
+Windows releases are unsigned for now, so SmartScreen warns. See the
 [code signing policy](docs/code-signing-policy.md), which also covers privacy: the program has no telemetry and
 connects only where you tell it to, plus GitHub if you agree to update checks.
 
@@ -77,6 +76,11 @@ keeps config, known hosts and logs in a `linecon-data` folder beside it.
 | Ctrl+Shift+C / V | Copy / paste (right-click also pastes, and selecting copies) |
 | Ctrl+Shift+R | Reconnect |
 | Alt+arrows | Move between panes |
+
+Drop sessions from another tool on the window to import them: a SecureCRT XML export or Sessions folder, PuTTY or
+KiTTY `.reg` files and portable sessions, or an OpenSSH config. Folders are kept. SecureCRT passwords are decrypted
+into your OS secret store, asking for its configuration passphrase if you set one. Other tools' saved passwords are left
+behind.
 
 Drop an iTerm2 `.itermcolors` or Windows Terminal `.json` scheme on the window to import it.
 

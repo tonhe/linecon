@@ -1608,3 +1608,109 @@ fn restarting_says_how_many_sessions_it_closes() {
     h.get_by_label_contains("closes your 2 open sessions");
     h.get_by_label("Restart now");
 }
+
+/// Writes a SecureCRT export whose passwords are the given encrypted values.
+fn securecrt_export(name: &str, password: &str) -> std::path::PathBuf {
+    let file =
+        std::env::temp_dir().join(format!("linecon-crt-ui-{}-{name}.xml", std::process::id()));
+    std::fs::write(
+        &file,
+        format!(
+            r#"<VanDyke version="3.0"><key name="Sessions"><key name="sw1">
+            <dword name="Is Session">1</dword><string name="Protocol Name">SSH2</string>
+            <string name="Hostname">10.1.1.1</string><string name="Username">admin</string>
+            <string name="Password V2">{password}</string></key></key></VanDyke>"#
+        ),
+    )
+    .unwrap();
+    file
+}
+
+fn run_until_passwords_settle(h: &mut Harness<'static, App>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    h.run_steps(2);
+    while h.state().imported_passwords_busy() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        h.run_steps(1);
+    }
+    h.run_steps(3);
+}
+
+const CRT_NO_PASSPHRASE: &str = "02:a946feca74f2916b52e36e1458fa1a6647b1af207ac92ee8b3273d4f6e54f8c85d5a0dcd7431cd38b8cab7f85133bddf";
+const CRT_WITH_PASSPHRASE: &str = "02:ada4e6e1709568d558ffc67a7cdd4d24b9e7187c7635b2550da50d6e6fb3acc72cd99789db9b703fd3e9daeb65dd161f";
+
+#[test]
+fn securecrt_passwords_land_in_the_secret_store() {
+    let mut app = App::new(location());
+    app.use_vault(Box::<MemoryStore>::default());
+    let file = securecrt_export("plain", CRT_NO_PASSPHRASE);
+    app.import_for_test(&file);
+    let mut h = harness(app);
+    run_until_passwords_settle(&mut h);
+    let app = h.state();
+    let identity = app.config_for_test().identities.first().unwrap().clone();
+    assert!(identity.has_password);
+    assert_eq!(
+        app.vault_get(&identity.secret_key()).as_deref(),
+        Some("hunter2")
+    );
+    let saved = std::fs::read_to_string(app.config_file_for_test()).unwrap_or_default();
+    assert!(!saved.contains("hunter2"), "plain text in the config file");
+    let _ = std::fs::remove_file(file);
+}
+
+#[test]
+fn a_securecrt_passphrase_is_asked_for_and_can_be_retried() {
+    let mut app = App::new(location());
+    app.use_vault(Box::<MemoryStore>::default());
+    let file = securecrt_export("phrase", CRT_WITH_PASSPHRASE);
+    app.import_for_test(&file);
+    let mut h = harness(app);
+    run_until_passwords_settle(&mut h);
+    h.get_by_label("SecureCRT configuration passphrase");
+    h.get_by_role(egui::accesskit::Role::PasswordInput)
+        .type_text("wrong");
+    h.run_steps(1);
+    h.get_by_label("Decrypt").click();
+    run_until_passwords_settle(&mut h);
+    h.get_by_label("That passphrase does not open them.");
+    h.get_by_role(egui::accesskit::Role::PasswordInput)
+        .type_text("config phrase");
+    h.run_steps(1);
+    h.get_by_label("Decrypt").click();
+    run_until_passwords_settle(&mut h);
+    assert!(h
+        .query_by_label("SecureCRT configuration passphrase")
+        .is_none());
+    let app = h.state();
+    let identity = app.config_for_test().identities.first().unwrap().clone();
+    assert_eq!(
+        app.vault_get(&identity.secret_key()).as_deref(),
+        Some("hunter2")
+    );
+    let _ = std::fs::remove_file(file);
+}
+
+#[test]
+fn skipping_the_securecrt_passphrase_keeps_the_sessions() {
+    let mut app = App::new(location());
+    app.use_vault(Box::<MemoryStore>::default());
+    let file = securecrt_export("skip", CRT_WITH_PASSPHRASE);
+    app.import_for_test(&file);
+    let mut h = harness(app);
+    run_until_passwords_settle(&mut h);
+    h.get_by_label("Skip").click();
+    h.run_steps(3);
+    assert!(h
+        .query_by_label("SecureCRT configuration passphrase")
+        .is_none());
+    let identity = h
+        .state()
+        .config_for_test()
+        .identities
+        .first()
+        .unwrap()
+        .clone();
+    assert!(!identity.has_password);
+    let _ = std::fs::remove_file(file);
+}

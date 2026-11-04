@@ -1,6 +1,8 @@
-//! Imports sessions from other tools. Everything here is plain parsing, and
-//! stored passwords are deliberately left behind.
+//! Imports sessions from other tools. Everything here is plain parsing. Stored passwords are
+//! left behind, except SecureCRT's, which are carried still encrypted for the caller to open
+//! and put in the secret store.
 
+use crate::securecrt_crypto::PendingPassword;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -18,6 +20,10 @@ pub struct Imported {
     pub jump_host: String,
     pub baud: Option<u32>,
     pub legacy: bool,
+    /// SecureCRT's encrypted password, if it had one.
+    pub encrypted_password: String,
+    /// The SecureCRT credential this login comes from, which sessions share deliberately.
+    pub credential: String,
 }
 
 /// What came out of a source, with a count of entries that could not be used.
@@ -31,10 +37,19 @@ pub struct ImportResult {
 /// Adds sessions under a new folder and returns its id. Existing entries are
 /// untouched, so importing twice gives two folders rather than altered sessions.
 pub fn apply(config: &mut Config, result: &ImportResult) -> Option<Id> {
+    apply_with_passwords(config, result).map(|(root, _)| root)
+}
+
+/// Adds the sessions, and returns the encrypted passwords with the logins they belong to.
+pub fn apply_with_passwords(
+    config: &mut Config,
+    result: &ImportResult,
+) -> Option<(Id, Vec<PendingPassword<Id>>)> {
     let root = config.add_folder(None, &format!("Imported from {}", result.source))?;
     let mut folders: HashMap<Vec<String>, Id> = HashMap::new();
-    let mut identities: HashMap<(String, String), Id> = HashMap::new();
-    for session in &result.sessions {
+    let mut identities: HashMap<(String, String, String), Id> = HashMap::new();
+    let mut passwords = Vec::new();
+    for (index, session) in result.sessions.iter().enumerate() {
         let mut parent = root;
         let mut path = Vec::new();
         for folder in &session.folders {
@@ -49,22 +64,47 @@ pub fn apply(config: &mut Config, result: &ImportResult) -> Option<Id> {
             };
         }
         let id = config.add_session(Some(parent), &session.name, session.target.clone())?;
-        let login = (session.username.clone(), session.key_file.clone());
-        let identity = if login.0.is_empty() && login.1.is_empty() {
+        // A saved password stays with its one session, as sending it to a different device
+        // would give it away. A credential is shared because its owner chose that.
+        let scope = if !session.credential.is_empty() {
+            format!("credential {}", session.credential)
+        } else if !session.encrypted_password.is_empty() {
+            format!("session {index}")
+        } else {
+            String::new()
+        };
+        let login = (
+            session.username.clone(),
+            session.key_file.clone(),
+            scope.clone(),
+        );
+        let identity = if scope.is_empty() && login.0.is_empty() && login.1.is_empty() {
             None
         } else {
-            Some(*identities.entry(login).or_insert_with(|| {
-                let label = if session.username.is_empty() {
+            let known = identities.contains_key(&login);
+            let identity = *identities.entry(login).or_insert_with(|| {
+                let label = if !session.credential.is_empty() {
+                    session.credential.clone()
+                } else if !session.username.is_empty() {
+                    session.username.clone()
+                } else if !session.key_file.is_empty() {
                     session.key_file.clone()
                 } else {
-                    session.username.clone()
+                    session.name.clone()
                 };
                 let new = config.add_identity(&label, &session.username);
                 let entry = config.identity_mut(new).expect("just added");
                 entry.key_file = session.key_file.clone();
                 entry.use_agent = true;
                 new
-            }))
+            });
+            if !known && !session.encrypted_password.is_empty() {
+                passwords.push(PendingPassword {
+                    owner: identity,
+                    encrypted: session.encrypted_password.clone(),
+                });
+            }
+            Some(identity)
         };
         let overrides = config.overrides_mut(id)?;
         overrides.identity = identity;
@@ -76,7 +116,7 @@ pub fn apply(config: &mut Config, result: &ImportResult) -> Option<Id> {
         }
         overrides.serial_baud = session.baud;
     }
-    Some(root)
+    Some((root, passwords))
 }
 
 // ---------------------------------------------------------------- ssh config
@@ -409,7 +449,7 @@ pub fn decode_text(data: &[u8]) -> String {
 
 // ------------------------------------------------------------------- SecureCRT
 
-/// Parses one SecureCRT session .ini. Its stored password fields are ignored.
+/// Parses one SecureCRT session .ini. Its stored password stays encrypted here.
 pub fn parse_securecrt(folders: Vec<String>, name: &str, text: &str) -> Option<Imported> {
     let mut strings = HashMap::new();
     let mut numbers = HashMap::new();
@@ -426,6 +466,16 @@ pub fn parse_securecrt(folders: Vec<String>, name: &str, text: &str) -> Option<I
             }
         }
     }
+    securecrt_session(folders, name, &strings, &numbers)
+}
+
+/// Builds a session from SecureCRT's named settings, whichever file they came from.
+fn securecrt_session(
+    folders: Vec<String>,
+    name: &str,
+    strings: &HashMap<String, String>,
+    numbers: &HashMap<String, u32>,
+) -> Option<Imported> {
     let protocol = strings.get("Protocol Name")?.to_ascii_lowercase();
     let mut session = Imported {
         folders,
@@ -436,6 +486,12 @@ pub fn parse_securecrt(folders: Vec<String>, name: &str, text: &str) -> Option<I
             .or(strings.get("Identity Filename"))
             .cloned()
             .unwrap_or_default(),
+        encrypted_password: strings
+            .get("Password V2")
+            .or(strings.get("Password"))
+            .cloned()
+            .unwrap_or_default(),
+        credential: strings.get("Credential Title").cloned().unwrap_or_default(),
         ..Default::default()
     };
     // Its key path can carry a suffix after a colon-free path, such as ".pub::rawkey".
@@ -478,12 +534,146 @@ pub fn parse_securecrt(folders: Vec<String>, name: &str, text: &str) -> Option<I
     (!session.target.host.is_empty()).then_some(session)
 }
 
+/// A saved login from the export's `Credentials` section.
+struct SecureCrtCredential {
+    username: Option<String>,
+    key_file: Option<String>,
+    encrypted_password: Option<String>,
+}
+
+/// SecureCRT's XML export: nested `<key name="...">` elements with `<string>` and decimal
+/// `<dword>` settings. `Is Session` marks a session, and any other key under `Sessions` is
+/// a folder. Passwords stay encrypted here.
+fn parse_securecrt_xml(text: &str) -> Result<ImportResult, String> {
+    let document = roxmltree::Document::parse(text)
+        .map_err(|e| format!("this SecureCRT export could not be read: {e}"))?;
+    let mut result = ImportResult {
+        source: "SecureCRT".to_string(),
+        ..Default::default()
+    };
+    let keys = || document.descendants().filter(|n| n.has_tag_name("key"));
+    let named = |name: &str| keys().find(|k| k.attribute("name") == Some(name));
+    let mut credentials = HashMap::new();
+    if let Some(section) = named("Credentials") {
+        for key in section.children().filter(|n| n.has_tag_name("key")) {
+            let (strings, _) = securecrt_xml_settings(key);
+            credentials.insert(
+                key.attribute("name").unwrap_or_default().to_string(),
+                SecureCrtCredential {
+                    username: strings.get("Username").cloned(),
+                    key_file: strings
+                        .get("Identity Filename V2")
+                        .or(strings.get("Identity Filename"))
+                        .cloned(),
+                    encrypted_password: strings.get("Password V2").cloned(),
+                },
+            );
+        }
+    }
+    if let Some(sessions) = named("Sessions") {
+        walk_securecrt_xml(sessions, &[], &credentials, &mut result);
+    }
+    if result.sessions.is_empty() && result.skipped == 0 {
+        return Err("this SecureCRT export has no sessions in it".to_string());
+    }
+    Ok(result)
+}
+
+fn walk_securecrt_xml(
+    node: roxmltree::Node,
+    folders: &[String],
+    credentials: &HashMap<String, SecureCrtCredential>,
+    result: &mut ImportResult,
+) {
+    for key in node.children().filter(|n| n.has_tag_name("key")) {
+        let name = key.attribute("name").unwrap_or_default();
+        if name == "__FolderData__" || (folders.is_empty() && name == "Default") {
+            continue;
+        }
+        let (own_strings, own_numbers) = securecrt_xml_own_settings(key);
+        let is_session = match own_numbers.get("Is Session") {
+            Some(flag) => *flag == 1,
+            None => own_strings.contains_key("Protocol Name"),
+        };
+        if !is_session {
+            let mut nested = folders.to_vec();
+            nested.push(name.to_string());
+            walk_securecrt_xml(key, &nested, credentials, result);
+            continue;
+        }
+        let (mut strings, numbers) = securecrt_xml_settings(key);
+        strings
+            .entry("Protocol Name".to_string())
+            .or_insert_with(|| "SSH2".to_string());
+        // A shared credential holds the login for every session that names it.
+        if let Some(credential) = strings
+            .get("Credential Title")
+            .and_then(|title| credentials.get(title))
+        {
+            if let Some(username) = &credential.username {
+                strings.insert("Username".to_string(), username.clone());
+            }
+            if let Some(key_file) = &credential.key_file {
+                strings.insert("Identity Filename V2".to_string(), key_file.clone());
+            }
+            if let Some(password) = &credential.encrypted_password {
+                strings.insert("Password V2".to_string(), password.clone());
+            }
+        }
+        match securecrt_session(folders.to_vec(), name, &strings, &numbers) {
+            Some(session) => result.sessions.push(session),
+            None => result.skipped += 1,
+        }
+    }
+}
+
+/// The settings directly on a key.
+fn securecrt_xml_own_settings(
+    key: roxmltree::Node,
+) -> (HashMap<String, String>, HashMap<String, u32>) {
+    let mut strings = HashMap::new();
+    let mut numbers = HashMap::new();
+    for setting in key.children().filter(|n| n.is_element()) {
+        let Some(name) = setting.attribute("name") else {
+            continue;
+        };
+        let value = setting.text().unwrap_or_default().trim();
+        if setting.has_tag_name("string") {
+            strings.insert(name.to_string(), value.to_string());
+        } else if setting.has_tag_name("dword") {
+            if let Ok(number) = value.parse() {
+                numbers.insert(name.to_string(), number);
+            }
+        }
+    }
+    (strings, numbers)
+}
+
+/// A key's settings along with those in its sub-keys, some of which hold session settings.
+fn securecrt_xml_settings(key: roxmltree::Node) -> (HashMap<String, String>, HashMap<String, u32>) {
+    let (mut strings, mut numbers) = securecrt_xml_own_settings(key);
+    for child in key.children().filter(|n| n.has_tag_name("key")) {
+        let (child_strings, child_numbers) = securecrt_xml_settings(child);
+        for (name, value) in child_strings {
+            strings.entry(name).or_insert(value);
+        }
+        for (name, value) in child_numbers {
+            numbers.entry(name).or_insert(value);
+        }
+    }
+    (strings, numbers)
+}
+
 // ------------------------------------------------------------------- Sniffing
 
 const MAX_FILES: usize = 20_000;
 
 fn is_securecrt(text: &str) -> bool {
     text.contains("S:\"Protocol Name\"=")
+}
+
+fn is_securecrt_xml(text: &str) -> bool {
+    text.contains("<VanDyke") || (text.contains("<key ") && text.contains("\"Protocol Name\""))
 }
 
 fn is_putty_file(text: &str) -> bool {
@@ -562,6 +752,9 @@ pub fn import_path(path: &Path) -> Result<Option<ImportResult>, String> {
         .unwrap_or("session");
     if text.contains("Registry Editor") || text.contains("REGEDIT4") {
         return Ok(Some(parse_reg(&text)));
+    }
+    if is_securecrt_xml(&text) {
+        return parse_securecrt_xml(&text).map(Some);
     }
     if is_securecrt(&text) {
         let stem = name.strip_suffix(".ini").unwrap_or(name);
@@ -1143,19 +1336,204 @@ Match host never\n    User matched\n";
 D:\"[SSH2] Port\"=00000016\r\nS:\"Password V2\"=02:deadbeef\r\nS:\"Identity Filename V2\"=C:\\k\\id.pub::rawkey\r\n";
 
     #[test]
-    fn securecrt_ignores_stored_passwords() {
+    fn securecrt_ini_files_carry_the_encrypted_password() {
         let s = parse_securecrt(vec!["Site".into()], "sw3", CRT).unwrap();
         assert_eq!(s.target.host, "10.3.3.3");
         assert_eq!(s.target.port, Some(22));
         assert_eq!(s.username, "netops");
         assert_eq!(s.key_file, "C:\\k\\id.pub");
-        assert!(!format!("{s:?}").contains("deadbeef"));
+        assert_eq!(s.encrypted_password, "02:deadbeef");
         let serial = "S:\"Protocol Name\"=Serial\nS:\"Com Port\"=COM4\nD:\"Baud Rate\"=0001c200\n";
         let s = parse_securecrt(vec![], "con", serial).unwrap();
         assert_eq!(s.target.line, "COM4");
         assert_eq!(s.baud, Some(115200));
         assert!(parse_securecrt(vec![], "x", "S:\"Protocol Name\"=RLogin\n").is_none());
         assert!(parse_securecrt(vec![], "x", "nothing here\n").is_none());
+    }
+
+    const CRT_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<VanDyke version="3.0">
+  <key name="Global Options"><string name="Protocol Name">not a session</string></key>
+  <key name="Credentials">
+    <key name="lab login">
+      <string name="Username">shared-user</string>
+      <string name="Password V2">02:credentialsecret</string>
+      <string name="Identity Filename V2">/k/lab.pub::rawkey</string>
+    </key>
+  </key>
+  <key name="Sessions">
+    <key name="Default">
+      <dword name="Is Session">1</dword>
+      <string name="Protocol Name">SSH2</string>
+    </key>
+    <key name="Site">
+      <dword name="Is Session">0</dword>
+      <string name="Protocol Name">SSH2</string>
+      <key name="Core">
+        <key name="sw3 &amp; friends">
+          <dword name="Is Session">1</dword>
+          <string name="Protocol Name">SSH2</string>
+          <string name="Hostname">10.3.3.3</string>
+          <string name="Username">netops</string>
+          <string name="Password V2">02:deadbeef</string>
+          <array name="Port Forward Table V2"><string>unnamed</string></array>
+          <binary name="Mac Normal Font v2">00 ff</binary>
+          <dword name="[SSH2] Port">2222</dword>
+        </key>
+      </key>
+    </key>
+    <key name="con">
+      <dword name="Is Session">1</dword>
+      <string name="Protocol Name">Serial</string>
+      <string name="Com Port">COM4</string>
+      <dword name="Baud Rate">115200</dword>
+    </key>
+    <key name="shared">
+      <dword name="Is Session">1</dword>
+      <string name="Hostname">10.4.4.4</string>
+      <string name="Username">old-user</string>
+      <string name="Credential Title">lab login</string>
+    </key>
+    <key name="nested">
+      <dword name="Is Session">1</dword>
+      <string name="Protocol Name">Telnet</string>
+      <key name="Connection"><string name="Hostname">10.5.5.5</string><dword name="Port">2323</dword></key>
+    </key>
+    <key name="old">
+      <dword name="Is Session">1</dword>
+      <string name="Protocol Name">RLogin</string>
+      <string name="Hostname">h</string>
+    </key>
+  </key>
+</VanDyke>"#;
+
+    fn import_text(name: &str, text: &[u8]) -> Result<Option<ImportResult>, String> {
+        let dir = std::env::temp_dir().join(format!("linecon-crt-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, text).unwrap();
+        let result = import_path(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        result
+    }
+
+    #[test]
+    fn securecrt_xml_exports_keep_folders_and_logins() {
+        let r = import_text("export.xml", CRT_XML.as_bytes())
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.source, "SecureCRT");
+        assert_eq!(r.skipped, 1, "the protocol this cannot speak is counted");
+        assert_eq!(r.sessions.len(), 4, "{:?}", r.sessions);
+        let sw = &r.sessions[0];
+        assert_eq!(sw.name, "sw3 & friends");
+        assert_eq!(sw.folders, ["Site", "Core"]);
+        assert_eq!(sw.target.host, "10.3.3.3");
+        assert_eq!(sw.target.port, Some(2222));
+        assert_eq!(sw.username, "netops");
+        assert_eq!(r.sessions[1].target.line, "COM4");
+        assert_eq!(r.sessions[1].baud, Some(115200));
+        // No protocol means SSH2, and the login comes from the shared credential.
+        let shared = &r.sessions[2];
+        assert_eq!(shared.target.protocol, Protocol::Ssh);
+        assert_eq!(shared.username, "shared-user");
+        assert_eq!(shared.key_file, "/k/lab.pub");
+        // Settings in a sub-key belong to the session above them.
+        assert_eq!(r.sessions[3].target.host, "10.5.5.5");
+        assert_eq!(r.sessions[3].target.port, Some(2323));
+        assert_eq!(sw.encrypted_password, "02:deadbeef");
+        assert_eq!(shared.encrypted_password, "02:credentialsecret");
+        assert_eq!(shared.credential, "lab login");
+    }
+
+    /// A password goes only to the session it was saved for, unless its owner shared it
+    /// through a credential.
+    #[test]
+    fn imported_passwords_stay_with_their_own_login() {
+        let session = |name: &str, password: &str, credential: &str| Imported {
+            name: name.to_string(),
+            target: Target {
+                host: name.to_string(),
+                ..Default::default()
+            },
+            username: "admin".to_string(),
+            encrypted_password: password.to_string(),
+            credential: credential.to_string(),
+            ..Default::default()
+        };
+        let result = ImportResult {
+            source: "SecureCRT".to_string(),
+            sessions: vec![
+                session("a", "02:aa", ""),
+                session("b", "02:aa", ""),
+                session("c", "", ""),
+                session("d", "", ""),
+                session("e", "02:bb", "shared"),
+                session("f", "02:bb", "shared"),
+            ],
+            skipped: 0,
+        };
+        let mut config = Config::default();
+        let (_, passwords) = apply_with_passwords(&mut config, &result).unwrap();
+        fn find(nodes: &[Node], name: &str) -> Option<Id> {
+            nodes.iter().find_map(|node| match node {
+                Node::Session(session) if session.name == name => Some(session.id),
+                Node::Session(_) => None,
+                Node::Folder(folder) => find(&folder.children, name),
+            })
+        }
+        let identity = |config: &mut Config, name: &str| {
+            let id = find(&config.nodes, name).unwrap();
+            config.overrides_mut(id).unwrap().identity.unwrap()
+        };
+        let (a, b, c, d, e, f) = (
+            identity(&mut config, "a"),
+            identity(&mut config, "b"),
+            identity(&mut config, "c"),
+            identity(&mut config, "d"),
+            identity(&mut config, "e"),
+            identity(&mut config, "f"),
+        );
+        assert_ne!(a, b, "same username, but each password is its own");
+        assert_eq!(c, d, "no password, so they can share");
+        assert_ne!(a, c);
+        assert_eq!(e, f, "a shared credential is one login");
+        let owners: Vec<_> = passwords.iter().map(|p| p.owner).collect();
+        assert_eq!(owners, [a, b, e], "each login is decrypted once");
+    }
+
+    #[test]
+    fn securecrt_xml_problems_are_explained() {
+        let empty = "<VanDyke version=\"3.0\"><key name=\"Global Options\"/></VanDyke>";
+        assert!(import_text("empty.xml", empty.as_bytes())
+            .unwrap_err()
+            .contains("no sessions"));
+        let broken = "<VanDyke version=\"3.0\"><key name=\"Sessions\">";
+        assert!(import_text("broken.xml", broken.as_bytes())
+            .unwrap_err()
+            .contains("could not be read"));
+        // Some Windows tools write UTF-16.
+        let wide: Vec<u8> = [0xff, 0xfe]
+            .into_iter()
+            .chain(
+                CRT_XML
+                    .replace("UTF-8", "UTF-16")
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes),
+            )
+            .collect();
+        assert_eq!(
+            import_text("wide.xml", &wide)
+                .unwrap()
+                .unwrap()
+                .sessions
+                .len(),
+            4
+        );
+        // Other XML is still not ours.
+        assert!(import_text("other.xml", b"<config><item/></config>")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
