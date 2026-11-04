@@ -81,7 +81,21 @@ impl App {
         self.update_state = UpdateState::Installed(offer);
     }
 
+    pub fn focused_is_quick_for_test(&self) -> bool {
+        self.panes[&self.focused_pane().unwrap()].quick
+    }
+
+    pub fn palette_open_for_test(&self) -> bool {
+        self.palette.is_some()
+    }
+
+    pub fn open_connection_finder_with(&mut self, query: &str) {
+        self.open_connection_finder();
+        self.palette = Some((query.to_string(), 0));
+    }
+
     pub fn open_palette(&mut self, query: &str) {
+        self.palette_connections_only = false;
         self.palette = Some((query.to_string(), 0));
     }
 

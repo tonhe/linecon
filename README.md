@@ -64,6 +64,7 @@ keeps config, known hosts and logs in a `linecon-data` folder beside it.
 
 | Shortcut (Cmd on macOS) | |
 |---|---|
+| Ctrl+Shift+K | Search sessions, or type `user@host` to connect |
 | Ctrl+Shift+P | Command palette |
 | Ctrl+Shift+B | Hide or show the sidebar |
 | Ctrl+Shift+I | Settings for this session |

@@ -27,6 +27,7 @@ impl App {
                 command,
             });
         };
+        add("Find or connect", &shortcut("K"), Command::FindConnection);
         add("Split right", &shortcut("D"), Command::SplitRight);
         add("Split down", &shortcut("E"), Command::SplitDown);
         add("Close pane", &shortcut("W"), Command::ClosePane);
@@ -158,29 +159,75 @@ impl App {
                 command: Command::SetTheme(theme.name.clone()),
             });
         }
-        fn sessions(nodes: &[Node], items: &mut Vec<PaletteItem>) {
+        items.extend(self.connection_items());
+        items
+    }
+
+    /// Every saved session, with where it lives so that can be searched too.
+    fn connection_items(&self) -> Vec<PaletteItem> {
+        fn walk(nodes: &[Node], path: &str, items: &mut Vec<PaletteItem>) {
             for node in nodes {
                 match node {
-                    Node::Folder(f) => sessions(&f.children, items),
-                    Node::Session(s) => items.push(PaletteItem {
-                        label: s.name.clone(),
-                        hint: s.target.host.clone(),
-                        command: Command::Open(s.id),
-                    }),
+                    Node::Folder(f) => {
+                        let nested = if path.is_empty() {
+                            f.name.clone()
+                        } else {
+                            format!("{path} / {}", f.name)
+                        };
+                        walk(&f.children, &nested, items);
+                    }
+                    Node::Session(s) => {
+                        let place = if s.target.protocol == Protocol::Serial {
+                            &s.target.line
+                        } else {
+                            &s.target.host
+                        };
+                        items.push(PaletteItem {
+                            label: s.name.clone(),
+                            hint: if path.is_empty() {
+                                place.clone()
+                            } else {
+                                format!("{path} \u{b7} {place}")
+                            },
+                            command: Command::Open(s.id),
+                        });
+                    }
                 }
             }
         }
-        sessions(&self.config.nodes, &mut items);
+        let mut items = Vec::new();
+        walk(&self.config.nodes, "", &mut items);
         items
+    }
+
+    pub(super) fn open_connection_finder(&mut self) {
+        self.palette = Some((String::new(), 0));
+        self.palette_connections_only = true;
     }
 
     pub(super) fn palette_overlay(&mut self, ctx: &egui::Context, chrome: &Chrome) {
         let Some((mut query, mut selected)) = self.palette.take() else {
             return;
         };
-        let items = self.palette_items();
+        let connections_only = self.palette_connections_only;
+        let items = if connections_only {
+            self.connection_items()
+        } else {
+            self.palette_items()
+        };
         let lowered = query.to_lowercase();
-        let matches: Vec<&PaletteItem> = items
+        let typed = query.trim();
+        // What was typed, as somewhere new to connect to. It sits below any saved match, so
+        // Enter takes the session that was being searched for.
+        let new_connection = (connections_only
+            && !typed.contains(char::is_whitespace)
+            && parse_quick_connect(typed).is_some())
+        .then(|| PaletteItem {
+            label: format!("Connect to {typed}"),
+            hint: "new".to_string(),
+            command: Command::QuickConnect(typed.to_string()),
+        });
+        let mut matches: Vec<&PaletteItem> = items
             .iter()
             .filter(|i| {
                 lowered.split_whitespace().all(|w| {
@@ -188,6 +235,7 @@ impl App {
                 })
             })
             .collect();
+        matches.extend(new_connection.as_ref());
         let mut chosen = None;
         let mut close = ctx.input(|i| i.key_pressed(Key::Escape));
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)) {
@@ -209,7 +257,11 @@ impl App {
                         ui.set_width(500.0);
                         let edit = TextEdit::singleline(&mut query)
                             .id(egui::Id::unique("linecon-palette-input"))
-                            .hint_text("Type a command or session name")
+                            .hint_text(if connections_only {
+                                "Search sessions, or type user@host to connect"
+                            } else {
+                                "Type a command or session name"
+                            })
                             .desired_width(f32::INFINITY)
                             .frame(Frame::new());
                         let response = ui.add(edit);

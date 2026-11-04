@@ -2085,3 +2085,80 @@ fn a_failed_lookup_closes_only_that_session() {
     let reason = reason.unwrap_or_default();
     assert!(reason.contains("no-such-host.invalid"), "{reason}");
 }
+
+#[test]
+fn the_finder_searches_sessions_by_name_address_and_folder() {
+    let mut s = sample();
+    let folder = s.app.config.add_folder(None, "Datacenter").unwrap();
+    s.app
+        .config
+        .add_session(Some(folder), "edge-fw", target("172.16.9.9"))
+        .unwrap();
+    s.app.open_connection_finder_with("edge");
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    // The sidebar always shows it, so a match is a second one.
+    let shown = |h: &Harness<'static, App>| h.get_all_by_label("edge-fw").count();
+    assert_eq!(shown(&h), 2);
+    // Only connections: commands are for the palette.
+    assert!(h.query_by_label("Split right").is_none());
+    for query in ["172.16", "datacenter", "EDGE-FW"] {
+        h.state_mut().open_connection_finder_with(query);
+        h.run_steps(3);
+        assert_eq!(shown(&h), 2, "{query}");
+    }
+    h.state_mut()
+        .open_connection_finder_with("nothing-like-this-here x");
+    h.run_steps(3);
+    assert_eq!(shown(&h), 1);
+}
+
+/// A saved match comes first, so Enter takes what was searched for.
+#[test]
+fn enter_in_the_finder_opens_the_saved_session_before_a_new_one() {
+    let mut s = sample();
+    let folder = s.app.config.add_folder(None, "Datacenter").unwrap();
+    s.app
+        .config
+        .add_session(Some(folder), "edge-fw", target("127.0.0.1"))
+        .unwrap();
+    s.app.open_connection_finder_with("edge-fw");
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    h.get_by_label("Connect to edge-fw");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.state().tab_count(), 1);
+    assert!(!h.state().focused_is_quick_for_test());
+}
+
+#[test]
+fn the_finder_connects_to_something_new() {
+    let app = App::new(location());
+    let mut h = harness(app);
+    h.state_mut()
+        .open_connection_finder_with("admin@127.0.0.1:1");
+    h.run_steps(3);
+    h.get_by_label("Connect to admin@127.0.0.1:1");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.state().tab_count(), 1);
+    assert!(h.state().focused_is_quick_for_test());
+}
+
+#[test]
+fn the_finder_shortcut_goes_to_the_app_and_not_the_device() {
+    let mut h = harness(App::new(location()));
+    h.run_steps(2);
+    let shortcut = if cfg!(target_os = "macos") {
+        egui::Modifiers::MAC_CMD
+    } else {
+        egui::Modifiers::CTRL | egui::Modifiers::SHIFT
+    };
+    h.key_press_modifiers(shortcut, egui::Key::K);
+    h.run_steps(2);
+    assert!(h.state().palette_open_for_test());
+    h.key_press_modifiers(shortcut, egui::Key::K);
+    h.run_steps(2);
+    assert!(!h.state().palette_open_for_test());
+}

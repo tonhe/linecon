@@ -214,6 +214,25 @@ pub(super) fn tree_rows(
 }
 
 impl App {
+    /// Opens a tab on what was typed, like `admin@10.0.0.1:2222`. False if it makes no sense
+    /// as a place to connect to.
+    pub(super) fn quick_connect_to(&mut self, text: &str) -> bool {
+        let Some((target, user)) = parse_quick_connect(text) else {
+            return false;
+        };
+        let name = if target.protocol == Protocol::Serial {
+            target.line.clone()
+        } else {
+            target.host.clone()
+        };
+        let spec = self.spec_for(&name, None, &target, &user);
+        self.open_in_new_tab(spec);
+        if let Some(entry) = self.focused_pane().and_then(|id| self.panes.get_mut(&id)) {
+            entry.quick = true;
+        }
+        true
+    }
+
     pub(super) fn sidebar(&mut self, ui: &mut Ui, chrome: &Chrome) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("linecon0").size(14.0).color(chrome.text));
@@ -244,7 +263,8 @@ impl App {
                 .desired_width(f32::INFINITY),
         );
         if response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-            if let Some((target, user)) = parse_quick_connect(&self.quick_connect) {
+            let text = self.quick_connect.clone();
+            if parse_quick_connect(&text).is_some() {
                 // This Enter was for the box. The new tab takes focus this same frame, and
                 // would otherwise send it to the device as the first thing it hears.
                 ui.input_mut(|i| {
@@ -258,16 +278,7 @@ impl App {
                         )
                     });
                 });
-                let name = if target.protocol == Protocol::Serial {
-                    target.line.clone()
-                } else {
-                    target.host.clone()
-                };
-                let spec = self.spec_for(&name, None, &target, &user);
-                self.open_in_new_tab(spec);
-                if let Some(entry) = self.focused_pane().and_then(|id| self.panes.get_mut(&id)) {
-                    entry.quick = true;
-                }
+                self.quick_connect_to(&text);
                 self.quick_connect.clear();
             }
         }

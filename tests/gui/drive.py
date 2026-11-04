@@ -254,6 +254,17 @@ def split():
     shot("split-closed")
 
 
+@step("the finder searches sessions and connects to something new")
+def finder():
+    key("ctrl+shift+k")
+    typed("192.168.42.102")
+    # Both the saved session and a new connection to that address.
+    wait("Connect to 192")
+    shot("finder")
+    key("Escape")
+    gone("Connect to 192")
+
+
 @step("command palette opens, filters, runs a theme change")
 def palette():
     key("ctrl+shift+p")

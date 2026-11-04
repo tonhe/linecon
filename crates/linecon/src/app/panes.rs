@@ -346,6 +346,7 @@ impl App {
         };
         for hint in [
             "Type user@host in the sidebar, or press + to save a session".to_string(),
+            format!("{shortcut}K  find or connect"),
             format!("{shortcut}P  command palette"),
             format!("{shortcut}B  toggle sidebar"),
         ] {

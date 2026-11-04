@@ -178,6 +178,10 @@ enum Command {
         kitty: bool,
     },
     Open(Id),
+    /// Connect to what was typed.
+    QuickConnect(String),
+    /// Find a saved session, or connect to something new.
+    FindConnection,
 }
 
 const SAVE_RETRY: Duration = Duration::from_secs(5);
@@ -236,6 +240,8 @@ pub struct App {
     sidebar_open: bool,
     quick_connect: String,
     palette: Option<(String, usize)>,
+    /// The palette is only finding connections, not commands.
+    palette_connections_only: bool,
     inspector: Option<InspectTarget>,
     renaming: Option<(Id, String)>,
     paste_confirm: Option<(PaneId, String)>,
@@ -366,6 +372,7 @@ impl App {
             sidebar_open: true,
             quick_connect: String::new(),
             palette: None,
+            palette_connections_only: false,
             inspector: None,
             renaming: None,
             paste_confirm: None,
@@ -674,6 +681,10 @@ impl App {
                 self.dirty = true;
             }
             Command::Open(id) => self.open_saved(id),
+            Command::QuickConnect(text) => {
+                self.quick_connect_to(&text);
+            }
+            Command::FindConnection => self.open_connection_finder(),
             Command::RunSnippet(text) => self.run_snippet(&text),
             Command::ToggleFiles => self.toggle_files(),
             Command::SessionSettings => {
@@ -789,14 +800,22 @@ impl App {
         for (key, command) in table {
             if pressed(key, shift_cmd) {
                 if key == Key::P {
-                    self.palette = if self.palette.is_some() {
+                    self.palette = if self.palette.is_some() && !self.palette_connections_only {
                         None
                     } else {
                         Some((String::new(), 0))
                     };
+                    self.palette_connections_only = false;
                 } else {
                     self.run_command(ctx, command);
                 }
+            }
+        }
+        if pressed(Key::K, shift_cmd) {
+            if self.palette.is_some() && self.palette_connections_only {
+                self.palette = None;
+            } else {
+                self.open_connection_finder();
             }
         }
         if pressed(Key::Comma, shift_cmd) {
