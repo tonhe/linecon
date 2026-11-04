@@ -39,6 +39,7 @@ mod files;
 mod imported_passwords;
 mod inspector;
 mod logins;
+mod menus;
 mod overlays;
 mod panes;
 mod sidebar;
@@ -147,7 +148,7 @@ enum InspectTarget {
 }
 
 #[derive(Clone, PartialEq)]
-enum Command {
+pub(crate) enum Command {
     SplitRight,
     SplitDown,
     ClosePane,
@@ -183,6 +184,10 @@ enum Command {
     /// Find a saved session, or connect to something new.
     FindConnection,
     NewTab,
+    OpenPalette,
+    OpenUrl(&'static str),
+    About,
+    Quit,
 }
 
 const SAVE_RETRY: Duration = Duration::from_secs(5);
@@ -246,6 +251,7 @@ pub struct App {
     /// A new tab that has not been given a connection yet. It only becomes a real tab once
     /// something is chosen, so closing it leaves nothing behind.
     picking_new_tab: bool,
+    about_open: bool,
     inspector: Option<InspectTarget>,
     renaming: Option<(Id, String)>,
     paste_confirm: Option<(PaneId, String)>,
@@ -276,6 +282,38 @@ fn terminal_id(pane: PaneId) -> egui::Id {
 }
 
 /// Parses `[proto://][user@]host[:port]` and bare serial devices.
+/// A native menu's title, and each item's label and index into its list of commands.
+#[cfg(target_os = "macos")]
+pub type NativeMenu = (&'static str, Vec<Option<(String, usize)>>);
+
+/// The menus, for the native menu bar to show.
+#[cfg(target_os = "macos")]
+pub fn native_menu_items(updates: bool) -> Vec<NativeMenu> {
+    let mut chosen = crate::native_menu::COMMANDS.lock().unwrap();
+    chosen.clear();
+    menus::menu_columns(updates)
+        .into_iter()
+        .map(|(title, entries)| {
+            let entries = entries
+                .into_iter()
+                .map(|entry| {
+                    entry.map(|entry| {
+                        chosen.push(entry.command);
+                        (entry.label.to_string(), chosen.len() - 1)
+                    })
+                })
+                .collect();
+            (title, entries)
+        })
+        .collect()
+}
+
+/// Whether this build carries a key for checking updates.
+#[cfg(target_os = "macos")]
+pub fn has_update_key() -> bool {
+    update::public_key().is_some() && update::Version::parse(linecon_engine::VERSION).is_some()
+}
+
 pub fn parse_quick_connect(text: &str) -> Option<(Target, String)> {
     let text = text.trim();
     if text.is_empty() {
@@ -380,6 +418,7 @@ impl App {
             palette: None,
             palette_connections_only: false,
             picking_new_tab: false,
+            about_open: false,
             inspector: None,
             renaming: None,
             paste_confirm: None,
@@ -693,6 +732,13 @@ impl App {
             }
             Command::FindConnection => self.open_connection_finder(),
             Command::NewTab => self.open_new_tab_picker(),
+            Command::OpenPalette => {
+                self.palette_connections_only = false;
+                self.palette = Some((String::new(), 0));
+            }
+            Command::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
+            Command::About => self.about_open = true,
+            Command::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Command::RunSnippet(text) => self.run_snippet(&text),
             Command::ToggleFiles => self.toggle_files(),
             Command::SessionSettings => {
@@ -898,6 +944,16 @@ impl App {
             }
         }
 
+        if !cfg!(target_os = "macos") {
+            Panel::top("menus")
+                .exact_size(26.0)
+                .frame(
+                    Frame::new()
+                        .fill(chrome.sidebar)
+                        .inner_margin(Margin::symmetric(6, 1)),
+                )
+                .show(ui, |ui| self.menu_bar(ui));
+        }
         if !self.sidebar_open {
             Panel::left("sidebar-handle")
                 .exact_size(30.0)
@@ -1002,6 +1058,8 @@ impl App {
         self.poll_imported_passwords();
         self.imported_passphrase_overlay(&ctx, &chrome);
         self.agent_proposal_overlay(&ctx, &chrome);
+        self.about_overlay(&ctx, &chrome);
+        self.poll_native_menu(&ctx);
         self.poll_updates();
         self.update_overlay(&ctx, &chrome);
         self.save_if_needed();

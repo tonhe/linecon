@@ -28,6 +28,10 @@ time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
 
+
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.17", default-features = false }
+
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
 

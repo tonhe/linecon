@@ -81,6 +81,10 @@ impl App {
         self.update_state = UpdateState::Installed(offer);
     }
 
+    pub fn open_about_for_test(&mut self) {
+        self.about_open = true;
+    }
+
     pub fn focused_is_quick_for_test(&self) -> bool {
         self.panes[&self.focused_pane().unwrap()].quick
     }

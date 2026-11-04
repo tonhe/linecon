@@ -7,6 +7,7 @@ mod app;
 mod cli;
 mod keys;
 mod mcp;
+mod native_menu;
 mod openssh_keys;
 mod pane;
 mod serial_ports;
@@ -79,6 +80,7 @@ fn run_window(smoke: Option<std::path::PathBuf>) -> i32 {
             options,
             Box::new(move |_cc| {
                 update::clean_up_after_update();
+                native_menu::install();
                 let app = app::App::new(location);
                 Ok(match smoke {
                     Some(file) => Box::new(SmokeTest {

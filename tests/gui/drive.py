@@ -151,9 +151,9 @@ def step(name):
 
 
 STEPS = []
-QUICK_BOX = (215, 116)
-PASSWORD_BOX = (760, 170)
-NAME_FIELD = (1020, 143)
+QUICK_BOX = (215, 142)
+PASSWORD_BOX = (760, 196)
+NAME_FIELD = (1020, 169)
 
 
 @step("first login: quick connect, trust the key, remember the login")
@@ -265,6 +265,18 @@ def finder():
     gone("Connect to 192")
 
 
+@step("the menu row opens About and shows the version")
+def menus():
+    click("File", 0)
+    wait("About linecon0")
+    shot("menu-file")
+    click("About linecon0", 0)
+    wait("line con 0")
+    shot("about")
+    key("Escape")
+    time.sleep(0.5)
+
+
 @step("command palette opens, filters, runs a theme change")
 def palette():
     key("ctrl+shift+p")
@@ -288,10 +300,10 @@ def palette():
 
 @step("the sidebar hides and comes back")
 def sidebar():
-    click_xy(316, 81)
+    click_xy(316, 107)
     gone("Quick sessions")
     shot("sidebar-hidden")
-    click_xy(104, 72)
+    click_xy(104, 98)
     wait("Quick sessions")
     shot("sidebar-back")
 
@@ -347,7 +359,7 @@ def settings():
     time.sleep(1)
     assert 'name = "core-router"' in read_config(), "typing did not replace the name"
     shot("renamed")
-    click_xy(1160, 84)
+    click_xy(1160, 110)
     gone("Protocol")
 
 

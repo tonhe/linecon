@@ -2232,3 +2232,54 @@ fn only_the_app_shortcut_opens_a_new_tab() {
         assert!(!h.state().palette_open_for_test());
     }
 }
+
+#[test]
+fn the_menus_run_the_same_commands_as_the_shortcuts() {
+    if cfg!(target_os = "macos") {
+        return; // native there, and the window has no menu row
+    }
+    let mut h = harness(App::new(location()));
+    h.run_steps(3);
+    h.get_by_label("File").click();
+    h.run_steps(3);
+    h.get_by_label_contains("New Tab").click();
+    h.run_steps(3);
+    assert!(h.state().palette_open_for_test());
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    h.get_by_label("File").click();
+    h.run_steps(3);
+    h.get_by_label_contains("Preferences").click();
+    h.run_steps(3);
+    h.get_by_label("Global settings");
+}
+
+#[test]
+fn check_for_updates_is_only_on_builds_that_can() {
+    if cfg!(target_os = "macos") {
+        return;
+    }
+    let mut h = harness(App::new(location()));
+    h.run_steps(3);
+    h.get_by_label("File").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Check for Updates…").is_none());
+    h.key_press(egui::Key::Escape);
+    h.state_mut().set_update_key([1; 32]);
+    h.state_mut().set_update_checks(Some(false));
+    h.run_steps(3);
+    h.get_by_label("File").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Check for Updates…").is_some());
+}
+
+#[test]
+fn about_shows_the_version_and_closes() {
+    let mut h = harness(App::new(location()));
+    h.state_mut().open_about_for_test();
+    h.run_steps(3);
+    h.get_by_label_contains("Version ");
+    h.get_by_label("Close").click();
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Version ").is_none());
+}
