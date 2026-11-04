@@ -292,6 +292,8 @@ impl App {
                         ui.separator();
                         egui::ScrollArea::vertical()
                             .max_height(340.0)
+                            // Otherwise it starts at the size the last, shorter list left it.
+                            .min_scrolled_height((matches.len() as f32 * 34.0).min(340.0))
                             .show(ui, |ui| {
                                 for (index, item) in matches.iter().enumerate() {
                                     let is_selected = index == selected;

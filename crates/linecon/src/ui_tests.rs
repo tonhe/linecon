@@ -2352,3 +2352,43 @@ fn messages_are_still_seen_with_no_sidebar() {
     h.run_steps(3);
     h.get_by_label("Saved the thing");
 }
+
+/// While About is up, keys are for it, including the Esc that closes it.
+#[test]
+fn the_about_box_keeps_keys_from_the_device() {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 64];
+        while let Ok(n) = stream.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut h = harness(App::new(location()));
+    h.run_steps(3);
+    h.state_mut().quick_open(&format!("raw://127.0.0.1:{port}"));
+    let settle = |h: &mut Harness<'static, App>| {
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(600);
+        while std::time::Instant::now() < until {
+            h.step();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    };
+    settle(&mut h);
+    h.state_mut().open_about_for_test();
+    h.run_steps(3);
+    h.key_press(egui::Key::A);
+    h.key_press(egui::Key::Escape);
+    settle(&mut h);
+    assert!(
+        h.query_by_label_contains("Version ").is_none(),
+        "still open"
+    );
+    let got: Vec<u8> = rx.try_iter().flatten().collect();
+    assert!(got.is_empty(), "sent to the device: {got:?}");
+}

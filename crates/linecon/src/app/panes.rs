@@ -103,8 +103,11 @@ impl App {
             .map(|r| r.font_size.value)
             .unwrap_or(self.config.resolve_root().font_size.value) as f32;
         let is_focused_pane = self.focused_pane() == Some(id);
-        let overlay_open =
-            self.palette.is_some() || self.paste_confirm.is_some() || self.unlock.is_some();
+        let overlay_open = self.palette.is_some()
+            || self.paste_confirm.is_some()
+            || self.unlock.is_some()
+            || self.about_open
+            || !self.imported_passwords.locked.is_empty();
         let has_pending = entry.pane.shared.pending.lock().unwrap().is_some();
         // A field that had the keyboard last frame may have just given it up on this very
         // key, which was for the field. The terminal starts listening from the next frame.

@@ -268,13 +268,13 @@ def finder():
 @step("the menu row opens About and shows the version")
 def menus():
     click("File", 0)
-    wait("About linecon0")
+    wait("Preferences")
     shot("menu-file")
-    click("About linecon0", 0)
-    wait("line con 0")
+    click("About", 0)
+    wait("MIT licensed")
     shot("about")
     key("Escape")
-    time.sleep(0.5)
+    gone("MIT licensed")
 
 
 @step("command palette opens, filters, runs a theme change")
