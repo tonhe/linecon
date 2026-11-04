@@ -48,7 +48,7 @@ impl App {
         let repaint = self.repaint.clone();
         self.update_state = UpdateState::Installing(offer.clone());
         std::thread::spawn(move || {
-            let result = std::env::current_exe()
+            let result = update::program_path()
                 .map_err(|e| e.to_string())
                 .and_then(|exe| update::install(&offer, &exe));
             let _ = tx.send(UpdateEvent::Installed(result));
@@ -77,7 +77,12 @@ impl App {
         let state = std::mem::replace(&mut self.update_state, UpdateState::Idle);
         match event {
             UpdateEvent::Checked { manual, result } => match result {
-                Ok(Some(offer)) => self.update_state = UpdateState::Offered(offer),
+                Ok(Some(offer)) => {
+                    if manual {
+                        self.info = None;
+                    }
+                    self.update_state = UpdateState::Offered(offer);
+                }
                 Ok(None) if manual => {
                     self.info = Some(format!(
                         "linecon0 {} is the latest version.",
@@ -218,7 +223,7 @@ impl App {
             }
             Some(Choice::Dismiss) => self.update_state = UpdateState::Idle,
             Some(Choice::Restart) => {
-                let started = std::env::current_exe().and_then(|exe| update::restart(&exe));
+                let started = update::program_path().and_then(|exe| update::restart(&exe));
                 match started {
                     Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
                     Err(e) => self.error = Some(format!("could not restart: {e}")),

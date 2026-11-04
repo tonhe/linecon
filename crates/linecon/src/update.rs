@@ -16,6 +16,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -307,7 +308,7 @@ fn release_page(url: Option<&str>) -> String {
 }
 
 pub fn check_github(key: &[u8; 32]) -> Result<Option<Offer>, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = program_path().map_err(|e| e.to_string())?;
     check(API, key, linecon_engine::VERSION, &exe)
 }
 
@@ -362,10 +363,19 @@ fn old_path(exe: &Path) -> PathBuf {
     exe.with_file_name(name)
 }
 
+/// Where this program was started from. Asking again later gives the wrong answer: once an
+/// update has moved the running file aside, the system reports that old copy instead.
+pub fn program_path() -> io::Result<PathBuf> {
+    static PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+    PATH.get_or_init(|| std::env::current_exe().ok())
+        .clone()
+        .ok_or_else(|| io::Error::other("could not tell where this program is"))
+}
+
 /// Removes what the last update left behind. A running Windows program cannot delete
 /// itself, so this happens at the next start.
 pub fn clean_up_after_update() {
-    if let Ok(exe) = std::env::current_exe() {
+    if let Ok(exe) = program_path() {
         let _ = fs::remove_file(old_path(&exe));
     }
 }
@@ -758,6 +768,13 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
             exe
+        }
+
+        /// What Restart relies on: the path it runs must be the new program, not the old copy.
+        #[test]
+        fn the_program_path_survives_the_file_being_moved() {
+            let first = program_path().unwrap();
+            assert_eq!(program_path().unwrap(), first);
         }
 
         fn run_version(exe: &Path) -> String {
