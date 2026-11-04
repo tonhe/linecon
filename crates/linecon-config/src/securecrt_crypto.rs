@@ -254,6 +254,20 @@ mod tests {
         assert_eq!(*decrypt_password_v2(bare, "").unwrap(), "hunter2");
     }
 
+    /// From a real SecureCRT 9 export on macOS with no configuration passphrase, using a
+    /// throwaway login and an unset field.
+    #[test]
+    fn values_from_a_real_securecrt_export_open() {
+        let password = "03:b473a73497c3dd2143694fe18ce3300ba8e961ac5bd25cc32fc30864b9439bfbe96776ca173067ec625ddd8a8e90e811f5c20deb337bc6493ff4c9f44af952dbd4272c651c663cd706e21c527b8f438c";
+        assert_eq!(*decrypt_password_v2(password, "").unwrap(), "abc123");
+        let unset = "03:b473a73497c3dd2143694fe18ce3300b4f6acd821ce9fd647732ac7a0aef17e6f8f27d8e9b809b762f08e4a066a0661f13d0647ab1642d848445a7c12f977d10";
+        assert_eq!(*decrypt_password_v2(unset, "").unwrap(), "");
+        assert_eq!(
+            decrypt_password_v2(password, "wrong").unwrap_err(),
+            DecryptError::WrongPassphrase
+        );
+    }
+
     #[test]
     fn a_wrong_passphrase_is_reported_as_one() {
         assert_eq!(
