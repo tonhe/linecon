@@ -65,6 +65,13 @@ struct Terminal {
 
 impl Terminal {
     fn expect(&mut self, needle: &str) {
+        self.expect_keeping(needle);
+        // Later expectations only look at what came after this.
+        let at = self.seen.find(needle).unwrap() + needle.len();
+        self.seen.drain(..at);
+    }
+
+    fn expect_keeping(&mut self, needle: &str) {
         let deadline = Instant::now() + TIMEOUT;
         while !self.seen.contains(needle) {
             assert!(
@@ -76,9 +83,15 @@ impl Terminal {
                 self.seen.push_str(&String::from_utf8_lossy(&data));
             }
         }
-        // Later expectations only look at what came after this.
-        let at = self.seen.find(needle).unwrap() + needle.len();
-        self.seen.drain(..at);
+    }
+
+    /// Like `expect`, returning what came before the text.
+    fn read_until(&mut self, needle: &str) -> String {
+        self.expect_keeping(needle);
+        let at = self.seen.find(needle).unwrap();
+        let before = self.seen[..at].to_string();
+        self.seen.drain(..at + needle.len());
+        before
     }
 
     fn type_text(&mut self, text: &str) {
@@ -174,9 +187,10 @@ fn a_person_can_log_in_and_the_host_key_is_remembered() {
     term.type_text("y\r");
     term.expect("password:");
     term.type_text("lab-password\r");
-    // The password must not be echoed to the screen.
-    term.expect("$");
-    assert!(!term.seen.contains("lab-password"));
+    // The password must not be echoed to the screen. `expect` drops what it passes over, so
+    // this looks at it first.
+    let echoed = term.read_until("$");
+    assert!(!echoed.contains("lab-password"), "echoed: {echoed:?}");
     term.type_text("echo MARKER-$((40+2)); exit\r");
     term.expect("MARKER-42");
     wait_for_exit(&mut child);
@@ -220,6 +234,7 @@ fn legacy_flag_falls_back_to_ssh1_and_keeps_the_keyboard() {
         .map(String::from)
         .to_vec();
     let (mut child, mut term) = spawn_on_pty(&args, &config);
+    term.expect("Falling back to SSH-1");
     term.expect("Trust this key?");
     term.type_text("o\r");
     term.expect("password:");

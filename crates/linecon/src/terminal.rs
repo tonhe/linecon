@@ -86,6 +86,8 @@ impl TermCore {
         let outbox = Arc::new(Mutex::new(Outbox::default()));
         let config = Config {
             scrolling_history: scrollback,
+            // A device should not be able to change what the next paste sends elsewhere.
+            osc52: alacritty_terminal::term::Osc52::Disabled,
             ..Config::default()
         };
         let listener = Listener {
@@ -187,6 +189,12 @@ mod tests {
         );
         // Asking for more than exists is fine.
         assert!(t.text_with_scrollback(9999).contains("line 0"));
+    }
+
+    #[test]
+    fn a_device_cannot_write_the_clipboard() {
+        let mut core = TermCore::new(TermSize { cols: 80, rows: 24 }, 100);
+        assert_eq!(core.feed(b"\x1b]52;c;d3JpdGUgZXJhc2U=\x07").clipboard, None);
     }
 
     #[test]

@@ -8,6 +8,7 @@ pub mod algorithms;
 mod engine;
 pub mod hostkeys;
 pub mod negotiation;
+pub mod private_files;
 pub mod settings;
 pub mod sftp;
 

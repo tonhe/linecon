@@ -2410,6 +2410,7 @@ version = "0.0.1"
 dependencies = [
  "libc",
  "linecon-putty-sys",
+ "zeroize",
 ]
 
 [[package]]

@@ -156,6 +156,20 @@ enum Command {
     Open(Id),
 }
 
+/// What a host key question is about, from least to most worrying.
+fn host_key_heading(
+    key: &linecon_engine::HostKeyPrompt,
+    chrome: &Chrome,
+) -> (&'static str, Color32) {
+    if key.description.contains("does not match") {
+        ("Host key has CHANGED", chrome.danger)
+    } else if !key.known_types.is_empty() {
+        ("This host is known with a different key", chrome.danger)
+    } else {
+        ("Unknown host key", chrome.warning)
+    }
+}
+
 type DecryptedPasswords = linecon_config::securecrt_crypto::Decrypted<Id>;
 type PasswordChannel = (
     std::sync::mpsc::Sender<DecryptedPasswords>,
@@ -1684,18 +1698,20 @@ impl App {
                         );
                     }
                     (Some(Pending::HostKey(key)), _) => {
-                        let unknown = !key.description.contains("does not match");
-                        let heading = if unknown {
-                            "Unknown host key"
-                        } else {
-                            "Host key has CHANGED"
-                        };
-                        let color = if unknown {
-                            chrome.warning
-                        } else {
-                            chrome.danger
-                        };
+                        let (heading, color) = host_key_heading(key, chrome);
                         ui.label(RichText::new(heading).color(color).size(15.0));
+                        if !key.known_types.is_empty() {
+                            ui.label(
+                                RichText::new(format!(
+                                    "You have trusted its {} key before, and it is now offering \
+                                     {}. Only continue if you know why this changed: this is \
+                                     also what someone intercepting the connection would do.",
+                                    key.known_types.join(", "),
+                                    key.key_type
+                                ))
+                                .color(chrome.muted),
+                            );
+                        }
                         ui.add_space(4.0);
                         egui::ScrollArea::vertical()
                             .max_height(180.0)
@@ -3838,7 +3854,8 @@ fn files_body(ui: &mut Ui, sftp: &mut SftpPane, chrome: &Chrome) {
 
     match &question {
         Some(Question::HostKey(key)) => {
-            ui.label(RichText::new("Unknown host key").color(chrome.warning));
+            let (heading, color) = host_key_heading(key, chrome);
+            ui.label(RichText::new(heading).color(color));
             ui.label(
                 RichText::new(&key.description)
                     .monospace()

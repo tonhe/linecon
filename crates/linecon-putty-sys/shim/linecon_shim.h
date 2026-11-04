@@ -40,6 +40,8 @@ typedef struct {
     const char *text;
     const char *str1;
     const char *str2;
+    /* LC_EV_HOSTKEY: the host this key is for. */
+    const char *host;
     /* LC_EV_PROMPT: n_prompts entries in prompt_text/prompt_echo. */
     size_t n_prompts;
     const char *const *prompt_text;

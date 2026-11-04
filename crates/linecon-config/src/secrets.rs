@@ -174,10 +174,10 @@ impl EncryptedFile {
         out.extend_from_slice(&sealed);
 
         if let Some(dir) = self.path.parent() {
-            fs::create_dir_all(dir).map_err(SecretError::Io)?;
+            linecon_engine::private_files::create_dir(dir).map_err(SecretError::Io)?;
         }
         let tmp = self.path.with_extension("tmp");
-        let mut file = fs::File::create(&tmp).map_err(SecretError::Io)?;
+        let mut file = linecon_engine::private_files::create(&tmp).map_err(SecretError::Io)?;
         file.write_all(&out).map_err(SecretError::Io)?;
         file.sync_all().map_err(SecretError::Io)?;
         drop(file);

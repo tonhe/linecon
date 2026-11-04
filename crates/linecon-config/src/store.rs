@@ -44,10 +44,10 @@ pub fn save(path: &Path, config: &Config) -> Result<(), StoreError> {
     let text = toml::to_string_pretty(config).map_err(|e| StoreError::Encode(e.to_string()))?;
     let io_err = |e| StoreError::Io(path.to_path_buf(), e);
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(io_err)?;
+        linecon_engine::private_files::create_dir(dir).map_err(io_err)?;
     }
     let tmp = path.with_extension("toml.tmp");
-    let mut file = fs::File::create(&tmp).map_err(io_err)?;
+    let mut file = linecon_engine::private_files::create(&tmp).map_err(io_err)?;
     file.write_all(text.as_bytes()).map_err(io_err)?;
     file.sync_all().map_err(io_err)?;
     drop(file);

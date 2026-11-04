@@ -17,6 +17,25 @@ pub enum HostKeyLookup {
 pub trait HostKeyStore: Send + Sync {
     fn check(&self, host: &str, port: i32, key_type: &str, key: &str) -> HostKeyLookup;
     fn store(&self, host: &str, port: i32, key_type: &str, key: &str);
+    /// The key types already known for this host.
+    fn known_types(&self, _host: &str, _port: i32) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+fn types_for(keys: &HashMap<(String, i32, String), String>, host: &str, port: i32) -> Vec<String> {
+    let mut types: Vec<String> = keys
+        .keys()
+        .filter(|(h, p, _)| h == host && *p == port)
+        .map(|(_, _, key_type)| key_type.clone())
+        .collect();
+    types.sort();
+    types
+}
+
+/// Whether this name can be written to the known hosts file and read back as itself.
+fn storable(host: &str) -> bool {
+    !host.is_empty() && !host.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 fn lookup(found: Option<&String>, key: &str) -> HostKeyLookup {
@@ -46,6 +65,10 @@ impl HostKeyStore for MemoryHostKeys {
         let id = (host.to_string(), port, key_type.to_string());
         self.keys.lock().unwrap().insert(id, key.to_string());
     }
+
+    fn known_types(&self, host: &str, port: i32) -> Vec<String> {
+        types_for(&self.keys.lock().unwrap(), host, port)
+    }
 }
 
 /// One line per key: `host port type key`. Rewritten whole on each change.
@@ -57,8 +80,10 @@ pub struct KnownHostsFile {
 impl KnownHostsFile {
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let mut keys = HashMap::new();
-        match fs::read_to_string(path) {
-            Ok(text) => {
+        // Lossy, as one damaged line must not cost every other host its key.
+        match fs::read(path) {
+            Ok(data) => {
+                let text = String::from_utf8_lossy(&data);
                 for line in text.lines() {
                     let mut parts = line.splitn(4, ' ');
                     if let (Some(host), Some(port), Some(key_type), Some(key)) =
@@ -92,7 +117,7 @@ impl KnownHostsFile {
             .collect();
         lines.sort();
         let tmp = self.path.with_extension("tmp");
-        let mut file = fs::File::create(&tmp)?;
+        let mut file = crate::private_files::create(&tmp)?;
         for line in lines {
             writeln!(file, "{line}")?;
         }
@@ -111,7 +136,15 @@ impl HostKeyStore for KnownHostsFile {
         )
     }
 
+    fn known_types(&self, host: &str, port: i32) -> Vec<String> {
+        types_for(&self.keys.lock().unwrap(), host, port)
+    }
+
     fn store(&self, host: &str, port: i32, key_type: &str, key: &str) {
+        if !storable(host) {
+            eprintln!("not remembering a host key for an unusable host name");
+            return;
+        }
         let mut keys = self.keys.lock().unwrap();
         keys.insert(
             (host.to_string(), port, key_type.to_string()),
@@ -120,6 +153,53 @@ impl HostKeyStore for KnownHostsFile {
         if let Err(e) = self.save(&keys) {
             eprintln!("could not save {}: {e}", self.path.display());
         }
+    }
+}
+
+#[cfg(test)]
+mod hostile_tests {
+    use super::*;
+
+    fn temp(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("linecon-hk-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir.join("known_hosts")
+    }
+
+    #[test]
+    fn other_key_types_are_reported() {
+        let store = MemoryHostKeys::default();
+        store.store("h", 22, "ssh-ed25519", "k");
+        store.store("h", 22, "ssh-rsa", "k");
+        store.store("h", 2222, "ecdsa", "k");
+        assert_eq!(store.known_types("h", 22), ["ssh-ed25519", "ssh-rsa"]);
+        assert!(store.known_types("other", 22).is_empty());
+    }
+
+    #[test]
+    fn a_damaged_line_costs_only_itself() {
+        let path = temp("damaged");
+        fs::write(&path, b"good 22 ssh-rsa key\n\xff\xfe bad\n").unwrap();
+        let store = KnownHostsFile::open(&path).unwrap();
+        assert!(matches!(
+            store.check("good", 22, "ssh-rsa", "key"),
+            HostKeyLookup::Match
+        ));
+    }
+
+    #[test]
+    fn a_host_name_cannot_write_a_key_for_another_host() {
+        let path = temp("inject");
+        let store = KnownHostsFile::open(&path).unwrap();
+        store.store("sw1\nother 22 ssh-ed25519 AAAA", 22, "ssh-rsa", "k");
+        store.store("with space", 22, "ssh-rsa", "k");
+        drop(store);
+        let reopened = KnownHostsFile::open(&path).unwrap();
+        assert!(matches!(
+            reopened.check("other", 22, "ssh-ed25519", "AAAA"),
+            HostKeyLookup::Unknown
+        ));
     }
 }
 

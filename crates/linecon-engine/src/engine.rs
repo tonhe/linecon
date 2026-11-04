@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
+use zeroize::Zeroizing;
 
 use linecon_putty_sys as sys;
 
@@ -65,6 +66,10 @@ pub struct HostKeyPrompt {
     pub key: String,
     pub port: i32,
     pub description: String,
+    /// Other key types already remembered for this host. If there are any, this is not a
+    /// new host: something is offering a key it has not used before, which is also what a
+    /// machine in the middle would do.
+    pub known_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +91,8 @@ pub enum Special {
 pub enum OpenError {
     /// PuTTY refused to start the backend, with its reason.
     Backend(String),
+    /// The settings cannot be handed to PuTTY as they are.
+    Rejected(String),
     EngineUnavailable,
 }
 
@@ -93,6 +100,7 @@ impl std::fmt::Display for OpenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OpenError::Backend(reason) => write!(f, "unable to open connection: {reason}"),
+            OpenError::Rejected(reason) => write!(f, "unable to open connection: {reason}"),
             OpenError::EngineUnavailable => write!(f, "the protocol engine is not running"),
         }
     }
@@ -183,12 +191,20 @@ unsafe extern "C" fn on_event(ev: *const sys::lc_event) -> usize {
                 fields,
             })
         }
-        sys::LC_EV_HOSTKEY => Event::HostKey(HostKeyPrompt {
-            key_type: opt_string(ev.str1).unwrap_or_default(),
-            key: opt_string(ev.str2).unwrap_or_default(),
-            port: ev.arg,
-            description: opt_string(ev.text).unwrap_or_default(),
-        }),
+        sys::LC_EV_HOSTKEY => {
+            let key_type = opt_string(ev.str1).unwrap_or_default();
+            let host = opt_string(ev.host).unwrap_or_default();
+            let store = hostkeys().read().unwrap().clone();
+            let mut known_types = store.known_types(&host, ev.arg);
+            known_types.retain(|known| *known != key_type);
+            Event::HostKey(HostKeyPrompt {
+                key_type,
+                key: opt_string(ev.str2).unwrap_or_default(),
+                port: ev.arg,
+                description: opt_string(ev.text).unwrap_or_default(),
+                known_types,
+            })
+        }
         sys::LC_EV_WEAK_CRYPTO => Event::WeakCrypto {
             description: opt_string(ev.text).unwrap_or_default(),
         },
@@ -301,10 +317,16 @@ impl Session {
         });
         let (reply_tx, reply_rx) = mpsc::channel();
 
-        let pairs: Vec<(CString, CString)> = settings
+        // Dropping a setting could leave out the host it connects to, so this is an error.
+        let pairs = settings
             .iter()
-            .filter_map(|(k, v)| Some((CString::new(k).ok()?, CString::new(v).ok()?)))
-            .collect();
+            .map(|(k, v)| match (CString::new(k), CString::new(v)) {
+                (Ok(k), Ok(v)) => Ok((k, v)),
+                _ => Err(OpenError::Rejected(format!(
+                    "the setting {k} has a NUL byte in it"
+                ))),
+            })
+            .collect::<Result<Vec<(CString, CString)>, OpenError>>()?;
         let raw_user = Arc::into_raw(shared.clone());
         let user_addr = raw_user as usize;
 
@@ -421,10 +443,16 @@ impl Session {
     }
 
     pub fn answer_prompt(&self, answers: &[&str]) {
-        let answers: Vec<CString> = answers
+        // A NUL cannot be sent. Cancelling says so, where sending something else would use up
+        // a login attempt on a password nobody typed.
+        let Some(answers) = answers
             .iter()
-            .map(|a| CString::new(*a).unwrap_or_default())
-            .collect();
+            .map(|a| CString::new(*a).ok().map(Zeroizing::new))
+            .collect::<Option<Vec<_>>>()
+        else {
+            self.cancel_prompt();
+            return;
+        };
         self.command(move |s| {
             let pointers: Vec<*const c_char> = answers.iter().map(|a| a.as_ptr()).collect();
             unsafe { sys::lc_session_answer_prompt(s, pointers.as_ptr(), pointers.len()) };

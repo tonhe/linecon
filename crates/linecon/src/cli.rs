@@ -376,6 +376,15 @@ fn connect(settings: &Settings, policy: &AlgorithmPolicy) -> i32 {
                 }
             }
             Ok(Event::HostKey(key)) => {
+                if !key.known_types.is_empty() {
+                    say(&format!(
+                        "WARNING: this host is known with a different key ({}), and is now \
+                         offering {}. This is also what someone intercepting the connection \
+                         would do.\n",
+                        key.known_types.join(", "),
+                        key.key_type
+                    ));
+                }
                 say(&format!("{}\n", key.description));
                 let answer = ask(&input, "Trust this key? [y]es/[o]nce/[n]o: ", true);
                 let verdict = match answer.as_deref().map(str::trim) {
@@ -401,6 +410,10 @@ fn connect(settings: &Settings, policy: &AlgorithmPolicy) -> i32 {
                 let reason = failure.take().or(reason);
                 if let Some(reason) = &reason {
                     if negotiation::should_fall_back_to_ssh1(reason, &policy) {
+                        eprint!(
+                            "WARNING: this device only offered SSH-1, which is weak. Falling \
+                             back to SSH-1 because --legacy is on.\r\n"
+                        );
                         // Same reader thread, new session: it follows `current`.
                         policy.version = SshVersion::V1;
                         settings.algorithms(&policy);

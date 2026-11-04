@@ -120,9 +120,9 @@ pub fn encode_paste(text: &str, mode: TermMode) -> Vec<u8> {
     }
 }
 
-/// True if pasting this should ask first.
+/// True if pasting this should ask first: any line ending would run something on arrival.
 pub fn paste_needs_confirmation(text: &str) -> bool {
-    text.trim_end_matches(['\r', '\n']).contains(['\r', '\n'])
+    text.contains(['\r', '\n'])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn only_real_multiline_pastes_need_confirmation() {
         assert!(!paste_needs_confirmation("show version"));
-        assert!(!paste_needs_confirmation("show version\n"));
+        assert!(paste_needs_confirmation("write erase\n"));
         assert!(paste_needs_confirmation("conf t\nno ip route"));
     }
 

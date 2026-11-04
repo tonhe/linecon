@@ -37,6 +37,7 @@ pub struct lc_event {
     pub text: *const c_char,
     pub str1: *const c_char,
     pub str2: *const c_char,
+    pub host: *const c_char,
     pub n_prompts: usize,
     pub prompt_text: *const *const c_char,
     pub prompt_echo: *const c_uchar,

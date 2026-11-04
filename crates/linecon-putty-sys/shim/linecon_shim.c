@@ -233,6 +233,7 @@ static SeatPromptResult shim_confirm_ssh_host_key(
     ev.text = flat;
     ev.str1 = keytype;
     ev.str2 = keystr;
+    ev.host = host;
     ev.arg = port;
     emit(&ev);
     sfree(flat);

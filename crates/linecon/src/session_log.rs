@@ -1,6 +1,6 @@
 //! Session logging: everything received, with a timestamp at each line start.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 #[cfg(test)]
@@ -50,7 +50,7 @@ impl SessionLog {
             ))
             .unwrap_or_default();
         let path = dir.join(format!("{}-{stamp}.log", safe_name(session_name)));
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let file = linecon_engine::private_files::append(&path)?;
         Ok(Self {
             #[cfg(test)]
             path,

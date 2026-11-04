@@ -240,6 +240,7 @@ fn prompts_and_host_keys_appear_as_cards() {
              You have no guarantee that the server is the computer you think it is.\n\
              The server's rsa2 key fingerprint is:\n  ssh-rsa 1024 SHA256:Qm1t9V0mB2Xk7eQe1n3Y"
             .into(),
+        known_types: Vec::new(),
     }));
     let mut h = harness(s.app);
     h.run_steps(3);
@@ -1774,4 +1775,22 @@ fn quick_connect_as_another_user_does_not_use_the_global_password() {
     app.config.settings.identity = Some(global);
     assert!(!app.spec_has_password_for_test("bob"));
     assert!(app.spec_has_password_for_test("root"));
+}
+
+/// A new key type on a known host is not the same as a new host.
+#[test]
+fn a_host_known_with_a_different_key_says_so() {
+    let mut s = sample();
+    s.app.add_demo_tab("core-sw1", Some(s.core_sw), b"");
+    s.app.demo_pending(Pending::HostKey(HostKeyPrompt {
+        key_type: "ecdsa-sha2-nistp256".into(),
+        key: "abc".into(),
+        port: 22,
+        description: "The host key is not cached for this server".into(),
+        known_types: vec!["ssh-ed25519".into()],
+    }));
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    h.get_by_label("This host is known with a different key");
+    assert!(h.query_by_label("Unknown host key").is_none());
 }

@@ -175,7 +175,8 @@ pub fn weak_is_acceptable(description: &str) -> bool {
 pub fn should_fall_back_to_ssh1(reason: &str, policy: &AlgorithmPolicy) -> bool {
     policy.legacy
         && policy.version == SshVersion::V2
-        && reason.contains("SSH protocol version 2 required")
+        // The start only: anything later could be text the server chose.
+        && reason.starts_with("SSH protocol version 2 required")
 }
 
 impl NegotiationFailure {

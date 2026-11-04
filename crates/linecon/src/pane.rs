@@ -90,6 +90,10 @@ pub struct Pane {
     pump: Option<std::thread::JoinHandle<()>>,
     repaint: Repaint,
     pub reconnect_at: Option<Instant>,
+    /// This connection fell back to SSH-1. It lasts for the one connection: an attacker who
+    /// forced it once should not keep it for the life of the pane.
+    on_ssh1_fallback: bool,
+    starting_ssh1_fallback: bool,
     pub reconnect_attempts: u32,
 }
 
@@ -121,6 +125,8 @@ impl Pane {
             repaint,
             reconnect_at: None,
             reconnect_attempts: 0,
+            on_ssh1_fallback: false,
+            starting_ssh1_fallback: false,
         };
         pane.connect();
         pane
@@ -151,10 +157,21 @@ impl Pane {
             repaint,
             reconnect_at: None,
             reconnect_attempts: 0,
+            on_ssh1_fallback: false,
+            starting_ssh1_fallback: false,
         }
     }
 
     pub fn connect(&mut self) {
+        if self.starting_ssh1_fallback {
+            self.starting_ssh1_fallback = false;
+            self.on_ssh1_fallback = true;
+        } else if self.on_ssh1_fallback {
+            self.on_ssh1_fallback = false;
+            self.spec.policy.version = SshVersion::V2;
+            let policy = self.spec.policy.clone();
+            self.spec.settings.algorithms(&policy);
+        }
         self.stop_pump();
         self.reconnect_at = None;
         self.shared.stop.store(false, Ordering::SeqCst);
@@ -251,6 +268,12 @@ impl Pane {
             self.spec.policy.version = SshVersion::V1;
             let policy = self.spec.policy.clone();
             self.spec.settings.algorithms(&policy);
+            self.shared.core.lock().unwrap().feed(
+                b"\r\n[linecon0: this device only offered SSH-1, which is weak. Falling back \
+                  because legacy algorithms are on. If it normally speaks SSH-2, something may \
+                  be interfering.]\r\n",
+            );
+            self.starting_ssh1_fallback = true;
             self.connect();
             return;
         }
