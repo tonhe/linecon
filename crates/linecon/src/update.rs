@@ -548,6 +548,12 @@ mod tests {
     }
 
     #[test]
+    fn this_build_carries_a_usable_key() {
+        let key = public_key().expect("a key");
+        assert!(VerifyingKey::from_bytes(&key).is_ok());
+    }
+
+    #[test]
     fn keys_parse_or_leave_the_feature_off() {
         assert_eq!(parse_key(""), None);
         assert_eq!(parse_key("\n"), None);

@@ -50,6 +50,11 @@ Downloads are on the [releases page](https://github.com/tonhe/linecon/releases).
 - **Windows**: run `linecon-windows-x64.exe`. SmartScreen may warn, since it is unsigned. See the
   [code signing policy](docs/code-signing-policy.md). A console window may flash when starting it from Explorer.
 
+### Updates
+
+From v0.0.1-alpha.18, linecon0 asks once whether to check GitHub for new releases at startup, and the palette can check at
+any time. Nothing installs unless you choose it, and an update must pass a signature check first.
+
 ### Code signing
 
 Windows releases are unsigned for now, so SmartScreen warns. See the

@@ -43,7 +43,7 @@
 - The real window is driven with real input against real devices by `tests/gui`. 16 flows pass on Linux.
 
 - Updates from GitHub releases: opt-in checks, an Ed25519-signed manifest, a built-in key, and rollback. Tested against
-  a local host. Off until the public key is added, and no real update between two releases has run yet.
+  a local host. The key is in place from v0.0.1-alpha.18, and no real update between two releases has run yet.
 - macOS releases are signed and notarized from v0.0.1-alpha.15. Fetching the ticket failed on one CI machine in two
   runs, cause unknown, and rerunning the job on a fresh machine passed.
 

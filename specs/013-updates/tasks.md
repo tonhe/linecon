@@ -5,4 +5,4 @@
 - [X] T003 First-run question, palette command, sidebar offer
 - [X] T004 Release job signs the manifest
 - [X] T005 Key generation script and docs
-- [ ] T006 Add the public key once generated, then test a real update between two releases
+- [X] T006 Add the public key once generated, then test a real update between two releases
