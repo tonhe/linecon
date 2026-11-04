@@ -282,6 +282,13 @@ impl App {
                 self.quick_connect.clear();
             }
         }
+        self.status_messages(ui, chrome);
+        ui.add_space(6.0);
+        self.session_tree(ui, chrome);
+    }
+
+    /// Errors and what just happened.
+    pub(super) fn status_messages(&self, ui: &mut Ui, chrome: &Chrome) {
         for message in self
             .config_error
             .iter()
@@ -295,8 +302,17 @@ impl App {
             ui.add_space(4.0);
             ui.label(RichText::new(message).color(chrome.muted).small());
         }
-        ui.add_space(6.0);
+    }
 
+    pub(super) fn has_status_messages(&self) -> bool {
+        self.config_error.is_some()
+            || self.save_error.is_some()
+            || self.error.is_some()
+            || self.info.is_some()
+    }
+
+    /// The folders and sessions, wherever they are being shown.
+    pub(super) fn session_tree(&mut self, ui: &mut Ui, chrome: &Chrome) {
         let open: HashSet<Id> = self
             .panes
             .values()

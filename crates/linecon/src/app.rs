@@ -39,6 +39,7 @@ mod files;
 mod imported_passwords;
 mod inspector;
 mod logins;
+mod manager;
 mod menus;
 mod overlays;
 mod panes;
@@ -188,6 +189,8 @@ pub(crate) enum Command {
     OpenUrl(&'static str),
     About,
     Quit,
+    SessionManager,
+    ToggleSessionManagerPreference,
 }
 
 const SAVE_RETRY: Duration = Duration::from_secs(5);
@@ -252,6 +255,8 @@ pub struct App {
     /// something is chosen, so closing it leaves nothing behind.
     picking_new_tab: bool,
     about_open: bool,
+    manager_open: bool,
+    manager_search: String,
     inspector: Option<InspectTarget>,
     renaming: Option<(Id, String)>,
     paste_confirm: Option<(PaneId, String)>,
@@ -419,6 +424,8 @@ impl App {
             palette_connections_only: false,
             picking_new_tab: false,
             about_open: false,
+            manager_open: false,
+            manager_search: String::new(),
             inspector: None,
             renaming: None,
             paste_confirm: None,
@@ -678,7 +685,12 @@ impl App {
                     self.active_tab = (self.active_tab + 1) % self.tabs.len();
                 }
             }
-            Command::ToggleSidebar => self.sidebar_open = !self.sidebar_open,
+            // There is nothing to toggle when the session manager replaces it.
+            Command::ToggleSidebar => {
+                if !self.config.use_session_manager {
+                    self.sidebar_open = !self.sidebar_open;
+                }
+            }
             Command::CheckForUpdates => self.start_update_check(true),
             Command::ToggleUpdateChecks => {
                 let on = self.config.update_checks != Some(true);
@@ -738,6 +750,12 @@ impl App {
             }
             Command::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
             Command::About => self.about_open = true,
+            Command::SessionManager => self.manager_open = !self.manager_open,
+            Command::ToggleSessionManagerPreference => {
+                self.config.use_session_manager = !self.config.use_session_manager;
+                self.manager_open = self.config.use_session_manager;
+                self.dirty = true;
+            }
             Command::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Command::RunSnippet(text) => self.run_snippet(&text),
             Command::ToggleFiles => self.toggle_files(),
@@ -865,6 +883,9 @@ impl App {
                 }
             }
         }
+        if pressed(Key::O, shift_cmd) {
+            self.run_command(ctx, Command::SessionManager);
+        }
         if pressed(Key::T, shift_cmd) {
             if self.picking_new_tab {
                 self.palette = None;
@@ -954,7 +975,18 @@ impl App {
                 )
                 .show(ui, |ui| self.menu_bar(ui));
         }
-        if !self.sidebar_open {
+        let use_sidebar = !self.config.use_session_manager;
+        if !use_sidebar && self.has_status_messages() {
+            // These normally live in the sidebar, and must not go unseen.
+            Panel::bottom("status")
+                .frame(
+                    Frame::new()
+                        .fill(chrome.sidebar)
+                        .inner_margin(Margin::symmetric(10, 4)),
+                )
+                .show(ui, |ui| self.status_messages(ui, &chrome));
+        }
+        if use_sidebar && !self.sidebar_open {
             Panel::left("sidebar-handle")
                 .exact_size(30.0)
                 .resizable(false)
@@ -969,7 +1001,7 @@ impl App {
                     }
                 });
         }
-        if self.sidebar_open {
+        if use_sidebar && self.sidebar_open {
             Panel::left("sidebar")
                 .resizable(true)
                 .default_size(250.0)
@@ -981,7 +1013,7 @@ impl App {
                 )
                 .show(ui, |ui| self.sidebar(ui, &chrome));
         }
-        if self.inspector.is_some() {
+        if self.inspector.is_some() && !self.manager_open {
             Panel::right("inspector")
                 .resizable(true)
                 .default_size(330.0)
@@ -1059,6 +1091,7 @@ impl App {
         self.imported_passphrase_overlay(&ctx, &chrome);
         self.agent_proposal_overlay(&ctx, &chrome);
         self.about_overlay(&ctx, &chrome);
+        self.session_manager(&ctx, &chrome);
         self.poll_native_menu(&ctx);
         self.poll_updates();
         self.update_overlay(&ctx, &chrome);

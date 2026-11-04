@@ -64,7 +64,13 @@ pub(super) fn menu_columns(updates: bool) -> Vec<MenuColumn> {
     columns.push((
         "View",
         vec![
+            item("Session Manager", Some("O"), Command::SessionManager),
             item("Toggle Sidebar", Some("B"), Command::ToggleSidebar),
+            item(
+                "Switch Sidebar / Session Manager",
+                None,
+                Command::ToggleSessionManagerPreference,
+            ),
             item("Command Palette…", Some("P"), Command::OpenPalette),
             None,
             item("Search Scrollback", Some("F"), Command::Search),

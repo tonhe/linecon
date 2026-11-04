@@ -202,6 +202,9 @@ pub struct Config {
     /// Whether to look for updates at startup. `None` until the user has been asked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update_checks: Option<bool>,
+    /// Browse sessions in the session manager, with no sidebar at all.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub use_session_manager: bool,
     /// Settings applied at the root, beneath every folder.
     pub settings: Overrides,
     pub next_id: Id,
@@ -219,6 +222,7 @@ impl Default for Config {
             appearance: Appearance::Auto,
             mcp_enabled: false,
             update_checks: None,
+            use_session_manager: false,
             settings: Overrides::default(),
             next_id: 1,
             identities: Vec::new(),

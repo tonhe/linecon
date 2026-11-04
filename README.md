@@ -67,10 +67,14 @@ Run `linecon` with no arguments for the window, or with arguments for a command-
 client (`linecon --help` lists them). A file named `linecon.portable` next to the binary
 keeps config, known hosts and logs in a `linecon-data` folder beside it.
 
+Sessions can be browsed in the sidebar or in the session manager window. The palette can switch to the session manager
+for good, which removes the sidebar altogether.
+
 | Shortcut (Cmd on macOS) | |
 |---|---|
 | Ctrl+Shift+T | New tab, with a session picker |
 | Ctrl+Shift+K | Search sessions, or type `user@host` to connect |
+| Ctrl+Shift+O | Session manager |
 | Ctrl+Shift+P | Command palette |
 | Ctrl+Shift+B | Hide or show the sidebar |
 | Ctrl+Shift+I | Settings for this session |

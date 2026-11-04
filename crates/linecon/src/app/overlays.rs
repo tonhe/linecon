@@ -33,7 +33,21 @@ impl App {
         add("Split down", &shortcut("E"), Command::SplitDown);
         add("Close pane", &shortcut("W"), Command::ClosePane);
         add("Next tab", "Ctrl+Tab", Command::NextTab);
-        add("Toggle sidebar", &shortcut("B"), Command::ToggleSidebar);
+        add("Session manager", &shortcut("O"), Command::SessionManager);
+        if self.config.use_session_manager {
+            add(
+                "Use the sidebar instead of the session manager",
+                "",
+                Command::ToggleSessionManagerPreference,
+            );
+        } else {
+            add("Toggle sidebar", &shortcut("B"), Command::ToggleSidebar);
+            add(
+                "Use the session manager instead of the sidebar",
+                "removes the sidebar",
+                Command::ToggleSessionManagerPreference,
+            );
+        }
         if self.update_key.is_some() {
             add("Check for updates", "", Command::CheckForUpdates);
             let toggle = if self.config.update_checks == Some(true) {
@@ -165,7 +179,7 @@ impl App {
     }
 
     /// Every saved session, with where it lives so that can be searched too.
-    fn connection_items(&self) -> Vec<PaletteItem> {
+    pub(super) fn connection_items(&self) -> Vec<PaletteItem> {
         fn walk(nodes: &[Node], path: &str, items: &mut Vec<PaletteItem>) {
             for node in nodes {
                 match node {

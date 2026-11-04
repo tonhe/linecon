@@ -366,7 +366,11 @@ impl App {
             "Ctrl+Shift+"
         };
         for hint in [
-            "Type user@host in the sidebar, or press + to save a session".to_string(),
+            if self.config.use_session_manager {
+                format!("{shortcut}O  session manager")
+            } else {
+                "Type user@host in the sidebar, or press + to save a session".to_string()
+            },
             format!("{shortcut}K  find or connect"),
             format!("{shortcut}P  command palette"),
             format!("{shortcut}B  toggle sidebar"),

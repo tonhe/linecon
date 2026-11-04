@@ -2283,3 +2283,72 @@ fn about_shows_the_version_and_closes() {
     h.run_steps(3);
     assert!(h.query_by_label_contains("Version ").is_none());
 }
+
+#[test]
+fn the_session_manager_lists_searches_and_edits() {
+    let mut s = sample();
+    let folder = s.app.config.add_folder(None, "Datacenter").unwrap();
+    s.app
+        .config
+        .add_session(Some(folder), "edge-fw", target("172.16.9.9"))
+        .unwrap();
+    let mut h = harness(s.app);
+    h.run_steps(2);
+    h.key_press_modifiers(app_shortcut(), egui::Key::O);
+    h.run_steps(3);
+    assert!(h.state().manager_open_for_test());
+    h.get_by_label("New session");
+    let boxes =
+        |h: &Harness<'static, App>| h.get_all_by_role(egui::accesskit::Role::TextInput).count();
+    assert!(boxes(&h) >= 2);
+    h.get_by_label("Close").click();
+    h.run_steps(3);
+    assert!(!h.state().manager_open_for_test());
+}
+
+/// Choosing the manager means no sidebar at all, not a hidden one.
+#[test]
+fn choosing_the_session_manager_removes_the_sidebar_and_stays() {
+    use crate::app::Command;
+    let place = location();
+    let app = App::new(place.clone());
+    let mut h = harness(app);
+    h.run_steps(3);
+    h.get_by_label("linecon0");
+    assert!(h.query_by_label("‹").is_some(), "the sidebar starts on");
+    let ctx = h.ctx.clone();
+    h.state_mut()
+        .run_command_for_test(&ctx, Command::ToggleSessionManagerPreference);
+    h.run_steps(3);
+    assert!(h.state().manager_open_for_test());
+    h.get_by_label("Close").click();
+    h.run_steps(3);
+    // No sidebar, no strip, and Cmd+B cannot bring it back.
+    assert!(h.query_by_label("‹").is_none());
+    assert!(h.query_by_label("›").is_none());
+    h.key_press_modifiers(app_shortcut(), egui::Key::B);
+    h.run_steps(3);
+    assert!(h.query_by_label("‹").is_none());
+    h.state_mut().save_for_test();
+    drop(h);
+    // Across a restart too. The lock went with the first window.
+    let mut h = harness(App::new(place));
+    h.run_steps(3);
+    assert!(h.query_by_label("‹").is_none());
+    assert!(h.query_by_label("›").is_none());
+    let ctx = h.ctx.clone();
+    h.state_mut()
+        .run_command_for_test(&ctx, Command::ToggleSessionManagerPreference);
+    h.run_steps(3);
+    h.get_by_label("‹");
+}
+
+#[test]
+fn messages_are_still_seen_with_no_sidebar() {
+    let mut s = sample();
+    s.app.config.use_session_manager = true;
+    s.app.show_info_for_test("Saved the thing");
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    h.get_by_label("Saved the thing");
+}

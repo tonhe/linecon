@@ -81,6 +81,18 @@ impl App {
         self.update_state = UpdateState::Installed(offer);
     }
 
+    pub fn show_info_for_test(&mut self, text: &str) {
+        self.info = Some(text.to_string());
+    }
+
+    pub fn manager_open_for_test(&self) -> bool {
+        self.manager_open
+    }
+
+    pub fn run_command_for_test(&mut self, ctx: &egui::Context, command: Command) {
+        self.run_command(ctx, command);
+    }
+
     pub fn open_about_for_test(&mut self) {
         self.about_open = true;
     }
