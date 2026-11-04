@@ -86,7 +86,10 @@ impl App {
                 }
                 // A startup check stays quiet: being offline is not the user's problem.
                 Ok(None) => {}
-                Err(e) if manual => self.error = Some(e),
+                Err(e) if manual => {
+                    self.info = None;
+                    self.error = Some(e);
+                }
                 Err(_) => {}
             },
             UpdateEvent::Installed(Ok(())) => {
