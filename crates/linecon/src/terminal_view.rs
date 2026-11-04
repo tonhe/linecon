@@ -40,11 +40,14 @@ pub struct ViewOutput {
     pub paste_to_confirm: Option<String>,
 }
 
-fn is_app_shortcut(m: Modifiers) -> bool {
+/// Only keys that do something here. Others go to the device: Ctrl+Shift+6 is how Cisco
+/// gear is escaped from.
+fn is_app_shortcut(key: egui::Key, m: Modifiers) -> bool {
+    use egui::Key::{B, C, D, E, F, I, P, R, S, V, W};
     if cfg!(target_os = "macos") {
         m.mac_cmd
     } else {
-        m.ctrl && m.shift
+        m.ctrl && m.shift && matches!(key, B | C | D | E | F | I | P | R | S | V | W)
     }
 }
 
@@ -360,7 +363,7 @@ fn handle_keyboard(ui: &mut Ui, pane: &Pane, output: &mut ViewOutput) {
                 modifiers,
                 ..
             } => {
-                if is_app_shortcut(modifiers) {
+                if is_app_shortcut(key, modifiers) {
                     continue;
                 }
                 // Shift+PageUp and friends drive scrollback locally.
@@ -593,5 +596,33 @@ pub fn search_step(pane: &Pane, search: &mut Search, forward: bool) {
             }
         }
         None => search.no_match = true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_bound_keys_are_kept_from_the_device() {
+        let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
+        if !cfg!(target_os = "macos") {
+            for key in [egui::Key::Num6, egui::Key::Num2, egui::Key::Minus] {
+                assert!(!is_app_shortcut(key, ctrl_shift), "{key:?}");
+            }
+            for key in [egui::Key::C, egui::Key::V, egui::Key::P, egui::Key::D] {
+                assert!(is_app_shortcut(key, ctrl_shift), "{key:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_cisco_escape_encodes_with_shift_held() {
+        let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
+        let mode = alacritty_terminal::term::TermMode::NONE;
+        assert_eq!(
+            keys::encode_key(egui::Key::Num6, ctrl_shift, mode).unwrap(),
+            vec![0x1e]
+        );
     }
 }

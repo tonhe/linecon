@@ -1714,3 +1714,64 @@ fn skipping_the_securecrt_passphrase_keeps_the_sessions() {
     assert!(!identity.has_password);
     let _ = std::fs::remove_file(file);
 }
+
+/// Typing must stay with the device it was going to.
+#[test]
+fn closing_an_earlier_tab_keeps_the_same_tab_active() {
+    let mut app = App::new(location());
+    app.add_demo_tab("a", None, b"AAAA");
+    app.add_demo_tab("b", None, b"BBBB");
+    app.add_demo_tab("c", None, b"CCCC");
+    app.set_active_tab_for_test(1);
+    app.close_tab_for_test(0);
+    assert_eq!(app.active_tab_for_test(), 0);
+    assert!(app.focused_screen_contains("BBBB"));
+    // Closing the last tab while it is active still lands somewhere valid.
+    app.set_active_tab_for_test(1);
+    app.close_tab_for_test(1);
+    assert_eq!(app.active_tab_for_test(), 0);
+    assert!(app.focused_screen_contains("BBBB"));
+}
+
+/// A login inherited from a folder is used by everything under that folder.
+#[test]
+fn remembering_on_an_inherited_login_does_not_share_the_password() {
+    let mut app = App::new(location());
+    app.use_vault(Box::<MemoryStore>::default());
+    let folder = app.config.add_folder(None, "site").unwrap();
+    let shared = app.config.add_identity("site login", "netops");
+    app.config.overrides_mut(folder).unwrap().identity = Some(shared);
+    let sw1 = app
+        .config
+        .add_session(Some(folder), "sw1", target("10.0.0.1"))
+        .unwrap();
+    let sw2 = app
+        .config
+        .add_session(Some(folder), "sw2", target("10.0.0.2"))
+        .unwrap();
+    app.add_demo_tab("sw1", Some(sw1), b"");
+    app.demo_remember(Some("netops"), Some("hunter2"));
+    let mut h = harness(app);
+    h.run_steps(2);
+    let app = h.state();
+    assert!(
+        !app.config.identity(shared).unwrap().has_password,
+        "the password went on the login sw2 also uses"
+    );
+    let on_sw1 = app.config.resolve(sw1).unwrap();
+    assert!(on_sw1.identity(&app.config).unwrap().has_password);
+    let on_sw2 = app.config.resolve(sw2).unwrap();
+    assert!(!on_sw2.identity(&app.config).unwrap().has_password);
+}
+
+/// A saved password belongs to its user, so a different typed user must not send it.
+#[test]
+fn quick_connect_as_another_user_does_not_use_the_global_password() {
+    let mut app = App::new(location());
+    app.use_vault(Box::<MemoryStore>::default());
+    let global = app.config.add_identity("global", "root");
+    app.config.identity_mut(global).unwrap().has_password = true;
+    app.config.settings.identity = Some(global);
+    assert!(!app.spec_has_password_for_test("bob"));
+    assert!(app.spec_has_password_for_test("root"));
+}

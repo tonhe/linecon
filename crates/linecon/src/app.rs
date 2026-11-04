@@ -418,7 +418,15 @@ impl App {
             .and_then(|id| self.config.resolve(id))
             .unwrap_or_else(|| self.config.resolve_root());
         let settings = resolved.engine_settings_for(&self.config, target, user);
-        self.spec_from(name, id, &resolved, settings)
+        let mut spec = self.spec_from(name, id, &resolved, settings);
+        // A saved password belongs to its username, not whoever was typed.
+        let other_user = resolved
+            .identity(&self.config)
+            .is_some_and(|i| !user.is_empty() && i.username != user);
+        if other_user {
+            spec.password = None;
+        }
+        spec
     }
 
     fn spec_from(&self, name: &str, id: Option<Id>, r: &Resolved, settings: Settings) -> PaneSpec {
@@ -534,6 +542,10 @@ impl App {
         }
         if let Some(index) = empty {
             self.tabs.remove(index);
+            // Stay on the same tab, since typing goes wherever this points.
+            if index < self.active_tab {
+                self.active_tab -= 1;
+            }
             self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
         }
     }
@@ -866,7 +878,12 @@ impl App {
                 .config
                 .identity(*id)
                 .is_some_and(|i| i.username == username || username.is_empty());
-            same_user && (!saving_password || self.config.login_users(*id) <= 1)
+            // Inherited means every other session under that folder uses it too.
+            let own = self
+                .config
+                .session(session)
+                .is_some_and(|s| s.settings.identity == Some(*id));
+            same_user && (!saving_password || (own && self.config.login_users(*id) <= 1))
         });
         let identity = reusable.unwrap_or_else(|| {
             let host = self
@@ -992,8 +1009,13 @@ impl App {
                 self.dirty = true;
                 self.error = None;
                 self.info = Some(format!(
-                    "Imported {} sessions and {} logins. Passwords do not travel.",
-                    result.sessions, result.new_logins
+                    "Imported {} sessions and {} logins. Passwords do not travel.{}",
+                    result.sessions,
+                    result.new_logins,
+                    match result.removed_forwards {
+                        0 => String::new(),
+                        n => format!(" {n} port forwards were left out: add any you want."),
+                    }
                 ));
             }
             Err(e) => self.error = Some(format!("Could not import: {e}")),
@@ -4734,6 +4756,32 @@ impl App {
         let resolved = self.config.resolve(id)?;
         let identity = resolved.identity(&self.config)?;
         self.vault_get(&identity.secret_key())
+    }
+
+    pub fn spec_has_password_for_test(&self, user: &str) -> bool {
+        let target = Target {
+            host: "somewhere".to_string(),
+            ..Default::default()
+        };
+        self.spec_for("somewhere", None, &target, user)
+            .password
+            .is_some()
+    }
+
+    pub fn close_tab_for_test(&mut self, index: usize) {
+        let mut panes = Vec::new();
+        self.tabs[index].layout.panes(&mut panes);
+        for pane in panes {
+            self.close_pane(pane);
+        }
+    }
+
+    pub fn set_active_tab_for_test(&mut self, index: usize) {
+        self.active_tab = index;
+    }
+
+    pub fn active_tab_for_test(&self) -> usize {
+        self.active_tab
     }
 
     pub fn tab_count(&self) -> usize {

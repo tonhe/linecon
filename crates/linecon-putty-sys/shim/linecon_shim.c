@@ -45,6 +45,7 @@ struct lc_session {
 
     void (*dialog_cb)(void *ctx, SeatPromptResult result);
     void *dialog_ctx;
+    bool dialog_is_hostkey;
     char *hk_host;
     int hk_port;
     char *hk_type;
@@ -125,6 +126,7 @@ static SeatPromptResult shim_get_userpass_input(Seat *seat, prompts_t *p)
         /* PuTTY came back after our callback: hand over the final result. */
         if (!s->prompt_answered)
             return SPR_INCOMPLETE;
+        p->ldisc_ptr_to_us = NULL;
         s->prompt = NULL;
         s->prompt_answered = false;
         return s->prompt_result;
@@ -140,6 +142,9 @@ static SeatPromptResult shim_get_userpass_input(Seat *seat, prompts_t *p)
 
     s->prompt = p;
     s->prompt_answered = false;
+    /* PuTTY clears this when it frees the prompts, which through a jump host can come
+     * well before we hear the connection has gone. */
+    p->ldisc_ptr_to_us = &s->prompt;
 
     lc_event ev;
     memset(&ev, 0, sizeof(ev));
@@ -166,7 +171,10 @@ static void shim_notify_session_started(Seat *seat)
 static void shim_connection_fatal(Seat *seat, const char *message)
 {
     lc_session *s = seat_session(seat);
-    /* Any prompt in flight dies with the connection. */
+    /* Any prompt in flight dies with the connection. If it was already freed, this
+     * pointer was cleared at that moment, so it is safe to look through. */
+    if (s->prompt)
+        s->prompt->ldisc_ptr_to_us = NULL;
     s->prompt = NULL;
     s->dialog_cb = NULL;
     if (!s->fatal_message)
@@ -208,6 +216,7 @@ static SeatPromptResult shim_confirm_ssh_host_key(
     lc_session *s = seat_session(seat);
     s->dialog_cb = callback;
     s->dialog_ctx = ctx;
+    s->dialog_is_hostkey = true;
     sfree(s->hk_host);
     sfree(s->hk_type);
     sfree(s->hk_key);
@@ -237,6 +246,7 @@ static SeatPromptResult shim_confirm_weak(
     lc_session *s = seat_session(seat);
     s->dialog_cb = callback;
     s->dialog_ctx = ctx;
+    s->dialog_is_hostkey = false;
     char *flat = dialog_text_flatten(text);
     emit_text(s, LC_EV_WEAK_CRYPTO, 0, flat);
     sfree(flat);
@@ -482,9 +492,21 @@ static void finish_prompt(lc_session *s, SeatPromptResult spr)
         queue_toplevel_callback(p->callback, p->callback_ctx);
 }
 
+/* An answer can arrive after PuTTY has freed the layer that asked. Through a jump host
+ * the failure is only queued, so let it land first, and treat a finished connection as
+ * having no one left to answer. */
+static void settle(lc_session *s)
+{
+    while (toplevel_callback_pending())
+        run_toplevel_callbacks();
+    if (s->dialog_cb && s->backend && backend_exitcode(s->backend) >= 0)
+        s->dialog_cb = NULL;
+}
+
 void lc_session_answer_prompt(lc_session *s, const char *const *answers,
                               size_t n)
 {
+    settle(s);
     if (!s->prompt || s->prompt_answered)
         return;
     prompts_t *p = s->prompt;
@@ -495,6 +517,7 @@ void lc_session_answer_prompt(lc_session *s, const char *const *answers,
 
 void lc_session_cancel_prompt(lc_session *s)
 {
+    settle(s);
     if (!s->prompt || s->prompt_answered)
         return;
     finish_prompt(s, SPR_USER_ABORT);
@@ -502,8 +525,9 @@ void lc_session_cancel_prompt(lc_session *s)
 
 void lc_session_answer_hostkey(lc_session *s, int verdict)
 {
+    settle(s);
     void (*cb)(void *, SeatPromptResult) = s->dialog_cb;
-    if (!cb)
+    if (!cb || !s->dialog_is_hostkey)
         return;
     s->dialog_cb = NULL;
     if (verdict == 2)
@@ -514,8 +538,9 @@ void lc_session_answer_hostkey(lc_session *s, int verdict)
 
 void lc_session_answer_weak(lc_session *s, int accept)
 {
+    settle(s);
     void (*cb)(void *, SeatPromptResult) = s->dialog_cb;
-    if (!cb)
+    if (!cb || s->dialog_is_hostkey)
         return;
     s->dialog_cb = NULL;
     cb(s->dialog_ctx, accept ? SPR_OK : SPR_USER_ABORT);
