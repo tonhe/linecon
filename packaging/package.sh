@@ -26,11 +26,17 @@ sign_and_notarize() {
   security set-keychain-settings -lut 3600 "$keychain"
   security unlock-keychain -p "$keychain_password" "$keychain"
   security import "$work/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+  # A .p12 usually holds only the certificate, and without Apple's intermediates macOS
+  # does not count it as valid.
+  for intermediate in DeveloperIDG2CA DeveloperIDCA; do
+    security import "packaging/macos/$intermediate.cer" -k "$keychain" >/dev/null
+  done
   security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
   security list-keychains -d user -s "$keychain" login.keychain-db
   identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)
   if [ -z "$identity" ]; then
-    echo "no Developer ID Application certificate in MACOS_CERT_P12" >&2
+    echo "no valid Developer ID Application certificate in MACOS_CERT_P12. It holds:" >&2
+    security find-identity -p codesigning "$keychain" >&2
     exit 1
   fi
   sign() { codesign --force --options runtime --timestamp --sign "$identity" "$@"; }

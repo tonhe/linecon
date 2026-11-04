@@ -17,8 +17,9 @@ ordinary pushes never receive these secrets.
 1. In Xcode (Settings, Accounts, Manage Certificates) or the developer portal, create a **Developer ID Application**
    certificate. Not "Apple Development" or "Mac App Distribution".
 2. In Keychain Access, find it under My Certificates, including its private key, and export it as a .p12.
-3. In App Store Connect, under Users and Access, Integrations, Team Keys, create a key with the **Developer** role and
-   download the .p8. It can only be downloaded once.
+3. In App Store Connect, go to Users and Access, Integrations, then **App Store Connect API** under Keys in the left
+   column. The first time, the Account Holder has to click Request Access, and Team Keys appears once that is approved.
+   Create a key with the **Developer** role and download the .p8. It can only be downloaded once.
 4. Add the secrets:
 
        base64 -i cert.p12 | gh secret set MACOS_CERT_P12 -R tonhe/linecon
