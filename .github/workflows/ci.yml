@@ -19,6 +19,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
+          # PuTTY's server only serves whole branches, so a shallow fetch of our pinned commit
+          # fails as soon as upstream moves past it.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
         with:
           components: rustfmt, clippy
@@ -56,6 +59,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
+          # PuTTY's server only serves whole branches, so a shallow fetch of our pinned commit
+          # fails as soon as upstream moves past it.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
       # A signed build starts from clean, with nothing carried over from another run.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
