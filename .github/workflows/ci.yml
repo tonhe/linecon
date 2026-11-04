@@ -28,6 +28,11 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Only a tagged build has a real version, which turns on update checks.
+      - name: Tests as a tagged build
+        run: cargo test -p linecon --bin linecon --locked
+        env:
+          LINECON_RELEASE: v0.0.0-alpha.0
       - name: Licence notices are current
         run: python3 packaging/notices.py --check
 

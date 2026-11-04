@@ -357,8 +357,10 @@ impl App {
             _instance_lock: instance_lock.flatten(),
             error: known_hosts_error,
             info: None,
-            update_key: update::public_key()
-                .filter(|_| update::Version::parse(linecon_engine::VERSION).is_some()),
+            // Tests turn this on themselves, and never reach the network by accident.
+            update_key: update::public_key().filter(|_| {
+                !cfg!(test) && update::Version::parse(linecon_engine::VERSION).is_some()
+            }),
             focus_last_frame: None,
             imported_passwords: ImportedPasswords::default(),
             update_state: UpdateState::Idle,
