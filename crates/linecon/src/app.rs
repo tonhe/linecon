@@ -128,7 +128,7 @@ struct PaneEntry {
     answers: Vec<String>,
     /// The file browser, when opened for this pane.
     sftp: Option<SftpPane>,
-    /// What an agent may do here. Starts at asking and is never saved.
+    /// What an agent may do here. Starts at none and is never saved.
     agent: Access,
     /// To notice a disconnect, which takes back full control.
     agent_was_live: bool,
@@ -499,7 +499,7 @@ impl App {
             broadcast: false,
             answers: Vec::new(),
             sftp: None,
-            agent: Access::Ask,
+            agent: Access::None,
             agent_was_live: false,
             quick: false,
             remember_login: false,

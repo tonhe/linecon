@@ -895,7 +895,7 @@ fn file_browser_moves_files_against_the_legacy_server() {
 /// Access set in the window is what the agent server enforces, and it is off
 /// until granted.
 #[test]
-fn agent_access_is_off_until_the_server_is_started() {
+fn agent_access_is_off_until_granted_pane_by_pane() {
     use crate::mcp::{handle, Access};
     use serde_json::json;
     let mut s = sample();
@@ -925,9 +925,7 @@ fn agent_access_is_off_until_the_server_is_started() {
 
     h.state_mut().config.mcp_enabled = true;
     h.run_steps(2);
-    // On, but taken away from this pane.
-    h.state_mut().set_focused_agent_access(Access::None);
-    h.run_steps(2);
+    // On, but this pane has not been granted.
     assert_eq!(
         call(host.as_ref(), "list_sessions", json!({}))["content"][0]["text"],
         "[]"
@@ -1826,6 +1824,7 @@ fn live_agent_pane() -> (
     s.app.add_demo_tab("core-sw1", Some(s.core_sw), b"");
     s.app.config.mcp_enabled = true;
     s.app.set_focused_live_for_test(true);
+    s.app.set_focused_agent_access(crate::mcp::Access::Ask);
     let host = s.app.agent_host();
     let mut h = harness(s.app);
     h.run_steps(3);
@@ -1839,7 +1838,7 @@ fn live_agent_pane() -> (
 }
 
 #[test]
-fn a_new_pane_asks_and_a_person_decides() {
+fn an_asking_pane_waits_for_a_person_to_decide() {
     use serde_json::json;
     let (mut h, host, id) = live_agent_pane();
     let (error, text) = agent_call(
