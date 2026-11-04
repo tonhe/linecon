@@ -175,6 +175,10 @@ impl Pane {
         self.stop_pump();
         self.reconnect_at = None;
         self.shared.stop.store(false, Ordering::SeqCst);
+        if self.shared.ever_live.load(Ordering::SeqCst) {
+            self.shared.core.lock().unwrap().reset_modes();
+            self.shared.local_echo.store(false, Ordering::SeqCst);
+        }
         *self.shared.status.lock().unwrap() = Status::Connecting;
         *self.shared.pending.lock().unwrap() = None;
         *self.shared.failure.lock().unwrap() = None;
@@ -335,6 +339,7 @@ fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint:
     let mut weak_reason = None;
     let mut sent_started = false;
     let mut tried_password = false;
+    let mut password_refused = false;
     while !shared.stop.load(Ordering::SeqCst) {
         let event = match session.recv_timeout(Duration::from_millis(100)) {
             Ok(event) => event,
@@ -388,6 +393,8 @@ fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint:
                     tried_password = true;
                     session.answer_prompt(&[password.as_str()]);
                 } else {
+                    // Asked again after the saved one was sent: it was refused.
+                    password_refused |= tried_password;
                     *shared.pending.lock().unwrap() = Some(Pending::Prompt(prompt));
                 }
             }
@@ -412,7 +419,7 @@ fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint:
                 let is_ssh = spec.settings.get("Protocol") == Some("ssh");
                 let ever_live = shared.ever_live.load(Ordering::SeqCst);
                 shared.may_retry.store(
-                    may_retry(ever_live, is_ssh, exit_code, reason.as_deref()),
+                    may_retry(ever_live, is_ssh, exit_code, reason.as_deref()) && !password_refused,
                     Ordering::SeqCst,
                 );
                 if reason

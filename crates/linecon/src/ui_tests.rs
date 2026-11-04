@@ -1961,3 +1961,48 @@ fn closing_the_search_bar_does_not_send_escape_to_the_device() {
     let got: Vec<u8> = rx.try_iter().flatten().collect();
     assert!(got.is_empty(), "sent to the device: {got:?}");
 }
+
+/// A second window must not erase what the first one saves.
+#[test]
+fn a_second_window_cannot_overwrite_the_settings() {
+    let shared = location();
+    let mut first = App::new(shared.clone());
+    first.config.add_folder(None, "from the first window");
+    first.mark_dirty_for_test();
+    first.save_for_test();
+    let mut second = App::new(shared.clone());
+    second.config.add_folder(None, "from the second window");
+    second.mark_dirty_for_test();
+    second.save_for_test();
+    let saved = std::fs::read_to_string(shared.config_file()).unwrap();
+    assert!(saved.contains("from the first window"));
+    assert!(!saved.contains("from the second window"));
+    // Once the first has gone, the next window owns it.
+    drop(first);
+    drop(second);
+    let mut third = App::new(shared.clone());
+    third.config.add_folder(None, "from the third window");
+    third.mark_dirty_for_test();
+    third.save_for_test();
+    let saved = std::fs::read_to_string(shared.config_file()).unwrap();
+    assert!(saved.contains("from the third window"));
+}
+
+/// One failure must not lose every later edit.
+#[test]
+fn a_failed_save_is_tried_again() {
+    let place = location();
+    std::fs::create_dir_all(place.config_file()).unwrap(); // a folder in the way of the file
+    let mut app = App::new(place.clone());
+    app.config_error_clear_for_test();
+    app.config.add_folder(None, "kept");
+    app.mark_dirty_for_test();
+    app.save_for_test();
+    assert!(app.save_error_for_test().is_some());
+    std::fs::remove_dir_all(place.config_file()).unwrap();
+    app.forget_failed_save_for_test();
+    app.save_for_test();
+    assert!(app.save_error_for_test().is_none());
+    let saved = std::fs::read_to_string(place.config_file()).unwrap();
+    assert!(saved.contains("kept"));
+}

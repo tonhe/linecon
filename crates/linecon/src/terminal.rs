@@ -124,6 +124,15 @@ impl TermCore {
         }
     }
 
+    /// Leaves whatever mode the last connection set, keeping the text on screen. A link that
+    /// dropped inside vim or tmux would otherwise turn pastes and clicks into garbage.
+    pub fn reset_modes(&mut self) {
+        let _ = self.feed(
+            b"\x1b[?1049l\x1b[?1l\x1b>\x1b[?25h\x1b[?7h\x1b[?2004l\
+              \x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[0m\r\n",
+        );
+    }
+
     pub fn mode(&self) -> TermMode {
         *self.term.mode()
     }
@@ -195,6 +204,24 @@ mod tests {
     fn a_device_cannot_write_the_clipboard() {
         let mut core = TermCore::new(TermSize { cols: 80, rows: 24 }, 100);
         assert_eq!(core.feed(b"\x1b]52;c;d3JpdGUgZXJhc2U=\x07").clipboard, None);
+    }
+
+    #[test]
+    fn reset_leaves_modes_from_the_last_connection() {
+        let mut core = TermCore::new(TermSize { cols: 80, rows: 24 }, 100);
+        core.feed(b"kept\r\n\x1b[?1h\x1b[?2004h\x1b[?1002h\x1b[?1049h");
+        assert!(core.mode().contains(TermMode::ALT_SCREEN));
+        core.reset_modes();
+        let mode = core.mode();
+        for gone in [
+            TermMode::ALT_SCREEN,
+            TermMode::APP_CURSOR,
+            TermMode::BRACKETED_PASTE,
+            TermMode::MOUSE_DRAG,
+        ] {
+            assert!(!mode.contains(gone), "{gone:?}");
+        }
+        assert!(core.visible_lines().iter().any(|l| l.contains("kept")));
     }
 
     #[test]

@@ -125,6 +125,29 @@ pub fn paste_needs_confirmation(text: &str) -> bool {
     text.contains(['\r', '\n'])
 }
 
+/// Typed bytes as a broadcast peer should get them. Each peer has its own terminal modes, and
+/// bracketed paste markers would land as garbage on a device that has not asked for them.
+pub fn for_broadcast_peer(typed: &[u8], peer_mode: TermMode) -> Vec<u8> {
+    if peer_mode.contains(TermMode::BRACKETED_PASTE) {
+        return typed.to_vec();
+    }
+    const START: &[u8] = b"\x1b[200~";
+    const END: &[u8] = b"\x1b[201~";
+    let mut out = Vec::with_capacity(typed.len());
+    let mut rest = typed;
+    while !rest.is_empty() {
+        if rest.starts_with(START) {
+            rest = &rest[START.len()..];
+        } else if rest.starts_with(END) {
+            rest = &rest[END.len()..];
+        } else {
+            out.push(rest[0]);
+            rest = &rest[1..];
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseEvent {
     Press(PointerButton),
@@ -287,6 +310,14 @@ mod tests {
     #[test]
     fn only_real_multiline_pastes_need_confirmation() {
         assert!(!paste_needs_confirmation("show version"));
+        assert_eq!(
+            for_broadcast_peer(b"\x1b[200~a\rb\x1b[201~", TermMode::NONE),
+            b"a\rb"
+        );
+        assert_eq!(
+            for_broadcast_peer(b"\x1b[200~a\x1b[201~", TermMode::BRACKETED_PASTE),
+            b"\x1b[200~a\x1b[201~"
+        );
         assert!(paste_needs_confirmation("write erase\n"));
         assert!(paste_needs_confirmation("conf t\nno ip route"));
     }

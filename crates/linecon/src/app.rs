@@ -172,6 +172,20 @@ fn host_key_heading(
     }
 }
 
+const SAVE_RETRY: Duration = Duration::from_secs(5);
+
+/// Only one window at a time can own the config folder. The lock goes when the process does,
+/// however it ends.
+fn take_instance_lock(location: &ConfigLocation) -> Result<std::fs::File, ()> {
+    let path = location.config_file().with_file_name("instance.lock");
+    if let Some(dir) = path.parent() {
+        linecon_engine::private_files::create_dir(dir).map_err(|_| ())?;
+    }
+    let file = linecon_engine::private_files::append(&path).map_err(|_| ())?;
+    file.try_lock().map_err(|_| ())?;
+    Ok(file)
+}
+
 type DecryptedPasswords = linecon_config::securecrt_crypto::Decrypted<Id>;
 type PasswordChannel = (
     std::sync::mpsc::Sender<DecryptedPasswords>,
@@ -222,6 +236,10 @@ pub struct App {
     pub config: Config,
     location: ConfigLocation,
     config_error: Option<String>,
+    save_error: Option<String>,
+    last_failed_save: Option<Instant>,
+    /// Held for as long as this window owns the config folder.
+    _instance_lock: Option<std::fs::File>,
     vault: Arc<Mutex<Vault>>,
     agent_view: Arc<AgentView>,
     agent_server: Option<McpServer>,
@@ -328,10 +346,18 @@ pub fn parse_quick_connect(text: &str) -> Option<(Target, String)> {
 
 impl App {
     pub fn new(location: ConfigLocation) -> Self {
-        let (config, config_error) = match linecon_config::load(&location.config_file()) {
+        let (config, mut config_error) = match linecon_config::load(&location.config_file()) {
             Ok(config) => (config, None),
             Err(e) => (Config::default(), Some(e.to_string())),
         };
+        let instance_lock = take_instance_lock(&location);
+        if instance_lock.is_err() && config_error.is_none() {
+            config_error = Some(
+                "Another linecon0 window has these settings open, so changes here will not be \
+                 saved."
+                    .to_string(),
+            );
+        }
         if let Ok(store) =
             linecon_engine::hostkeys::KnownHostsFile::open(&location.known_hosts_file())
         {
@@ -347,6 +373,9 @@ impl App {
             config,
             location,
             config_error,
+            save_error: None,
+            last_failed_save: None,
+            _instance_lock: instance_lock.ok(),
             error: None,
             info: None,
             update_key: update::public_key()
@@ -386,11 +415,27 @@ impl App {
     }
 
     fn save_if_needed(&mut self) {
-        // A damaged file is never overwritten: the user may want to repair it.
-        if self.dirty && self.config_error.is_none() {
-            self.dirty = false;
-            if let Err(e) = linecon_config::save(&self.location.config_file(), &self.config) {
-                self.config_error = Some(e.to_string());
+        // A damaged file is never overwritten: the user may want to repair it. The same goes
+        // for a file another window owns, as saving would erase its changes.
+        if !self.dirty || self.config_error.is_some() {
+            return;
+        }
+        // A failed save is tried again, since a full disk or a locked file can clear up.
+        if self
+            .last_failed_save
+            .is_some_and(|at| at.elapsed() < SAVE_RETRY)
+        {
+            return;
+        }
+        match linecon_config::save(&self.location.config_file(), &self.config) {
+            Ok(()) => {
+                self.dirty = false;
+                self.last_failed_save = None;
+                self.save_error = None;
+            }
+            Err(e) => {
+                self.last_failed_save = Some(Instant::now());
+                self.save_error = Some(format!("Could not save settings, retrying: {e}"));
             }
         }
     }
@@ -1571,10 +1616,10 @@ impl App {
             self.paste_confirm = Some((id, text));
         }
         if !output.typed.is_empty() && broadcasting {
-            for (other, peer) in &self.panes {
-                if *other != id && peer.broadcast {
-                    peer.pane.send(&output.typed);
-                }
+            for peer in self.broadcast_peers(id) {
+                let mode = peer.pane.shared.core.lock().unwrap().mode();
+                peer.pane
+                    .send(&keys::for_broadcast_peer(&output.typed, mode));
             }
         }
 
@@ -1914,7 +1959,12 @@ impl App {
                 self.quick_connect.clear();
             }
         }
-        for message in self.config_error.iter().chain(self.error.iter()) {
+        for message in self
+            .config_error
+            .iter()
+            .chain(self.save_error.iter())
+            .chain(self.error.iter())
+        {
             ui.add_space(4.0);
             ui.label(RichText::new(message).color(chrome.danger).small());
         }
@@ -3262,6 +3312,17 @@ impl App {
         }
     }
 
+    /// Other panes in the broadcast group, leaving out any at a login or other question,
+    /// where a command would be typed into a password prompt.
+    fn broadcast_peers(&self, source: PaneId) -> impl Iterator<Item = &PaneEntry> {
+        self.panes.iter().filter_map(move |(id, peer)| {
+            let ready = peer.broadcast
+                && *id != source
+                && peer.pane.shared.pending.lock().unwrap().is_none();
+            ready.then_some(peer)
+        })
+    }
+
     fn paste_overlay(&mut self, ctx: &egui::Context, chrome: &Chrome) {
         let Some((id, text)) = self.paste_confirm.clone() else {
             return;
@@ -3311,6 +3372,13 @@ impl App {
                 if let Some(entry) = self.panes.get(&id) {
                     let mode = entry.pane.shared.core.lock().unwrap().mode();
                     entry.pane.send(&keys::encode_paste(&text, mode));
+                    // Goes everywhere a single line would have gone.
+                    if entry.broadcast {
+                        for peer in self.broadcast_peers(id) {
+                            let mode = peer.pane.shared.core.lock().unwrap().mode();
+                            peer.pane.send(&keys::encode_paste(&text, mode));
+                        }
+                    }
                 }
             }
         }
@@ -4870,6 +4938,26 @@ impl App {
     pub fn set_focused_agent_access(&mut self, access: Access) {
         let id = self.focused_pane().unwrap();
         self.panes.get_mut(&id).unwrap().agent = access;
+    }
+
+    pub fn mark_dirty_for_test(&mut self) {
+        self.dirty = true;
+    }
+
+    pub fn save_for_test(&mut self) {
+        self.save_if_needed();
+    }
+
+    pub fn config_error_clear_for_test(&mut self) {
+        self.config_error = None;
+    }
+
+    pub fn save_error_for_test(&self) -> Option<&String> {
+        self.save_error.as_ref()
+    }
+
+    pub fn forget_failed_save_for_test(&mut self) {
+        self.last_failed_save = None;
     }
 
     pub fn open_search_for_test(&mut self) {
