@@ -14,8 +14,13 @@ eframe = { version = "0.37", default-features = false, features = ["accesskit", 
 egui = "0.37"
 plist = "1"
 serde_json = "1"
+sha2 = "0.10"
+tar = "0.4"
+ureq = { version = "3", features = ["platform-verifier"] }
 crossterm = "0.29"
 directories = "6"
+ed25519-dalek = "2"
+flate2 = "1"
 getrandom = "0.3"
 zeroize = "1"
 time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }

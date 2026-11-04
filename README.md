@@ -57,7 +57,7 @@ Downloads are on the [releases page](https://github.com/tonhe/linecon/releases).
 linecon0 is applying to use the [SignPath Foundation](https://signpath.org) for free code signing of its Windows
 releases. Until that is approved, Windows releases are unsigned. See the
 [code signing policy](docs/code-signing-policy.md), which also covers privacy: the program has no telemetry and
-connects only where you tell it to.
+connects only where you tell it to, plus GitHub if you agree to update checks.
 
 ## Use
 

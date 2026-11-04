@@ -1531,3 +1531,80 @@ fn the_enter_that_opens_a_quick_connection_is_not_sent_to_it() {
     let got: Vec<u8> = rx.try_iter().flatten().collect();
     assert!(got.is_empty(), "sent to the device on connect: {got:?}");
 }
+
+fn app_with_updates(checks: Option<bool>) -> App {
+    let mut app = App::new(location());
+    app.set_update_key([1; 32]);
+    app.set_update_checks(checks);
+    app
+}
+
+/// Builds without a key, including development builds, show no trace of updating.
+#[test]
+fn with_no_update_key_there_is_no_sign_of_updating() {
+    let mut h = harness(App::new(location()));
+    h.run_steps(3);
+    assert!(h
+        .query_by_label("Check for updates automatically?")
+        .is_none());
+    h.state_mut().open_palette("updates");
+    h.run_steps(3);
+    assert!(h.query_by_label("Check for updates").is_none());
+}
+
+/// The question is asked once, and declining means no check is ever made.
+#[test]
+fn the_first_launch_asks_about_update_checks_and_remembers() {
+    let mut h = harness(app_with_updates(None));
+    h.run_steps(3);
+    h.get_by_label("Check for updates automatically?");
+    h.get_by_label("Don't check").click();
+    h.run_steps(3);
+    assert_eq!(h.state().update_checks(), Some(false));
+    assert!(h
+        .query_by_label("Check for updates automatically?")
+        .is_none());
+}
+
+#[test]
+fn the_update_question_does_not_take_the_keyboard() {
+    let mut h = harness(app_with_updates(None));
+    h.run_steps(3);
+    h.key_press(egui::Key::Enter);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert_eq!(h.state().update_checks(), None);
+}
+
+#[test]
+fn an_update_can_be_refused_and_nothing_happens() {
+    let mut h = harness(app_with_updates(Some(false)));
+    h.state_mut().offer_update("0.0.9", true);
+    h.run_steps(3);
+    h.get_by_label("linecon0 0.0.9 is available");
+    h.get_by_label("Update");
+    h.get_by_label("Later").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("linecon0 0.0.9 is available").is_none());
+}
+
+/// Un-notarized Mac releases, for one, can only be installed by hand.
+#[test]
+fn an_update_that_cannot_install_offers_only_the_download_page() {
+    let mut h = harness(app_with_updates(Some(false)));
+    h.state_mut().offer_update("0.0.9", false);
+    h.run_steps(3);
+    assert!(h.query_by_label("Update").is_none());
+    h.get_by_label("Open download page");
+}
+
+#[test]
+fn restarting_says_how_many_sessions_it_closes() {
+    let mut h = harness(app_with_updates(Some(false)));
+    h.state_mut().add_demo_tab("one", None, b"");
+    h.state_mut().add_demo_tab("two", None, b"");
+    h.state_mut().update_installed("0.0.9");
+    h.run_steps(3);
+    h.get_by_label_contains("closes your 2 open sessions");
+    h.get_by_label("Restart now");
+}

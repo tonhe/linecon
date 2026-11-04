@@ -199,6 +199,9 @@ pub struct Config {
     /// Whether the agent server runs. Per-pane access is never saved.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub mcp_enabled: bool,
+    /// Whether to look for updates at startup. `None` until the user has been asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_checks: Option<bool>,
     /// Settings applied at the root, beneath every folder.
     pub settings: Overrides,
     pub next_id: Id,
@@ -215,6 +218,7 @@ impl Default for Config {
         Self {
             appearance: Appearance::Auto,
             mcp_enabled: false,
+            update_checks: None,
             settings: Overrides::default(),
             next_id: 1,
             identities: Vec::new(),

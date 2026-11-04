@@ -22,5 +22,5 @@ release is approved by hand. Nothing built elsewhere is signed.
 This program will not transfer any information to other networked systems unless specifically requested by the
 user or the person installing or operating it.
 
-It connects only to the hosts a user tells it to. It has no telemetry and no update check. An optional agent server,
+It connects only to the hosts a user tells it to. It has no telemetry. It asks GitHub for new releases only if the user agrees at first launch or asks from the palette; that request carries this version number, and GitHub sees the IP address it came from. Nothing is installed without the user choosing to. An optional agent server,
 off by default, listens on the local machine only.

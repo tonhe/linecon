@@ -187,3 +187,11 @@ As a GUI-subsystem program, a shell does not wait for it, so an interactive `lin
 the keyboard and output landed after the prompt. A single executable cannot be both, so it is a console program,
 and it releases its console when started from Explorer. The cost is a console window that may flash on a double
 click. Attached to a shell, the window's errors stay visible.
+
+## 2026-11-04: Updates are opt-in and signed with their own key
+
+The program asks once at first launch, because it runs on client networks where an unexpected call out needs a reason.
+A SHA-256 file on the same release page proves nothing if the release is tampered with, so CI signs a manifest with an
+Ed25519 key held only in a repository secret, and the public key is built in. That key can sign anything, so anyone
+who can change the release workflow could use it: the protection is against a tampered release or download, not a
+compromised repository. macOS installs only notarized updates and otherwise links to the download page.

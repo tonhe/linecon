@@ -92,12 +92,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           # Only the builds: CI's screenshots are artifacts too.
           pattern: linecon-*
           path: dist
           merge-multiple: true
+      - name: Sign the update manifest
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          NOTARIZED: ${{ secrets.MACOS_CERT_P12 != '' && 'yes' || 'no' }}
+        run: packaging/sign-update.sh dist "$GITHUB_REF_NAME" "$NOTARIZED"
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}

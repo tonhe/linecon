@@ -17,6 +17,7 @@ mod terminal_view;
 mod themes;
 #[cfg(test)]
 mod ui_tests;
+mod update;
 
 fn main() {
     // Older macOS passes a process serial number when launching from Finder.
@@ -76,6 +77,7 @@ fn run_window(smoke: Option<std::path::PathBuf>) -> i32 {
             "linecon",
             options,
             Box::new(move |_cc| {
+                update::clean_up_after_update();
                 let app = app::App::new(location);
                 Ok(match smoke {
                     Some(file) => Box::new(SmokeTest {
