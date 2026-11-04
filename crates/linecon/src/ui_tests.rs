@@ -2059,22 +2059,26 @@ fn an_encrypted_openssh_key_asks_before_connecting() {
 #[test]
 fn a_failed_lookup_closes_only_that_session() {
     use crate::pane::{Pane, Status};
+    fn slow_failure(_: &str, _: u16) -> std::io::Result<()> {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        Err(std::io::Error::other("no such host"))
+    }
     let app = App::new(location());
     let target = Target {
-        // The final dot keeps a local search domain from answering for it.
-        host: "no-such-host.invalid.".to_string(),
+        host: "sw1.example".to_string(),
         ..Default::default()
     };
     let spec = app.spec_for_test("sw", &target);
     let mut pane = Pane::new(spec, std::sync::Arc::new(|| {}));
+    pane.look_up = slow_failure;
     let started = std::time::Instant::now();
     pane.connect();
     assert!(
-        started.elapsed() < std::time::Duration::from_millis(500),
+        started.elapsed() < std::time::Duration::from_secs(1),
         "connect waited for the lookup"
     );
     assert_eq!(pane.status(), Status::Connecting);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while pane.status() == Status::Connecting && std::time::Instant::now() < deadline {
         pane.tick_reconnect();
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -2083,7 +2087,7 @@ fn a_failed_lookup_closes_only_that_session() {
         panic!("still connecting");
     };
     let reason = reason.unwrap_or_default();
-    assert!(reason.contains("no-such-host.invalid"), "{reason}");
+    assert!(reason.contains("sw1.example"), "{reason}");
 }
 
 #[test]

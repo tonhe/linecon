@@ -44,6 +44,10 @@ pub struct PaneSpec {
 
 pub type PasswordLookup = Arc<dyn Fn() -> Option<Zeroizing<String>> + Send + Sync>;
 
+fn system_look_up(host: &str, port: u16) -> std::io::Result<()> {
+    (host, port).to_socket_addrs().map(|_| ())
+}
+
 /// Asks the server what it offers, without making whoever is closing this pane wait for it.
 fn probe_unless_stopped(
     host: &str,
@@ -145,6 +149,7 @@ pub struct Pane {
     starting_ssh1_fallback: bool,
     lookup_generation: u64,
     waiting_on_lookup: Option<(u64, Settings)>,
+    pub look_up: fn(&str, u16) -> std::io::Result<()>,
     pub reconnect_attempts: u32,
 }
 
@@ -184,6 +189,7 @@ impl Pane {
             starting_ssh1_fallback: false,
             lookup_generation: 0,
             waiting_on_lookup: None,
+            look_up: system_look_up,
         };
         pane.connect();
         pane
@@ -222,6 +228,7 @@ impl Pane {
             starting_ssh1_fallback: false,
             lookup_generation: 0,
             waiting_on_lookup: None,
+            look_up: system_look_up,
         }
     }
 
@@ -263,15 +270,13 @@ impl Pane {
     /// first means a dead DNS server fails this session alone, and PuTTY's own lookup finds
     /// the answer cached when there is one.
     fn look_up_first(&mut self, host: String, port: u16, settings: Settings) {
+        let look_up = self.look_up;
         let generation = self.lookup_generation;
         self.waiting_on_lookup = Some((generation, settings));
         let shared = self.shared.clone();
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
-            let result = (host.as_str(), port)
-                .to_socket_addrs()
-                .map(|_| ())
-                .map_err(|e| format!("could not look up {host}: {e}"));
+            let result = look_up(&host, port).map_err(|e| format!("could not look up {host}: {e}"));
             *shared.lookup_done.lock().unwrap() = Some((generation, result));
             repaint();
         });
