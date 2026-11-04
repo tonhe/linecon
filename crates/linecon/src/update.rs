@@ -278,6 +278,10 @@ pub fn check(
         if offered <= current {
             return Ok(None);
         }
+        // From the signed version, as the listing's prerelease flag can be altered in transit.
+        if offered.is_prerelease() && !current.is_prerelease() {
+            return Ok(None);
+        }
         let sha256 = manifest
             .files
             .get(&asset_name)
@@ -289,13 +293,17 @@ pub fn check(
             url,
             sha256: sha256.clone(),
             can_install: asset != Asset::MacApp || manifest.notarized,
-            page: release["html_url"]
-                .as_str()
-                .unwrap_or(RELEASES_PAGE)
-                .to_string(),
+            page: release_page(release["html_url"].as_str()),
         }));
     }
     Ok(None)
+}
+
+/// The link comes from an unsigned listing, so it only stands if it is really ours.
+fn release_page(url: Option<&str>) -> String {
+    url.filter(|u| u.starts_with("https://github.com/tonhe/linecon/releases/"))
+        .unwrap_or(RELEASES_PAGE)
+        .to_string()
 }
 
 pub fn check_github(key: &[u8; 32]) -> Result<Option<Offer>, String> {
@@ -689,6 +697,25 @@ mod tests {
         assert!(check(&api, &key(), "0.0.1-alpha.11", fake_exe())
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn a_stable_build_ignores_a_prerelease_with_its_flag_removed() {
+        let (api, _) = serve_release("9.0.0-alpha.1", false, b"x".to_vec(), None, None);
+        assert_eq!(check(&api, &key(), "1.0.0", fake_exe()).unwrap(), None);
+    }
+
+    #[test]
+    fn the_download_page_can_only_be_our_own() {
+        let ours = "https://github.com/tonhe/linecon/releases/tag/v1";
+        assert_eq!(release_page(Some(ours)), ours);
+        for bad in [
+            "https://evil.example/",
+            "https://github.com/tonhe/linecon.evil/",
+        ] {
+            assert_eq!(release_page(Some(bad)), RELEASES_PAGE);
+        }
+        assert_eq!(release_page(None), RELEASES_PAGE);
     }
 
     #[test]

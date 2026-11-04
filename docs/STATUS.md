@@ -18,7 +18,7 @@
   dynamic) and ssh-agent login, tested against the Docker server. Changed host keys block.
 
 - Imports from ~/.ssh/config, PuTTY and KiTTY (registry, .reg, portable files) and SecureCRT, by palette
-  or by dropping files on the window. Stored passwords are not imported. Snippets with folder scope.
+  or by dropping files on the window. SecureCRT passwords go to the secret store, and other tools' stored passwords are not imported. Snippets with folder scope.
 
 - The legacy toggle now reaches SSH-1-only devices by itself. Auto-reconnect retries real drops only.
 
@@ -54,7 +54,7 @@
 - Whatever real use of the window turns up.
 
 ## Blocked
-- Windows signing waits on the SignPath Foundation application, submitted 2026-11-03.
+- Windows signing: the SignPath Foundation declined for now, wanting more public visibility. See #5.
 - macOS signing waits on Developer ID secrets in the repository. See `docs/macos-signing.md`.
 
 ## Known gaps
@@ -71,4 +71,3 @@
 - Importers are tested against samples written from the formats, not exports from real installs.
 - MCP is tested with its own client code and has not been run against a real MCP client.
 - Saved passwords are not used through a jump host, because the prompt may be the jump host's.
-- macOS builds are not notarized, so Gatekeeper blocks them until allowed by hand.

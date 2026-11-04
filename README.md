@@ -43,11 +43,9 @@ Early development; see [docs/STATUS.md](docs/STATUS.md).
 
 Downloads are on the [releases page](https://github.com/tonhe/linecon/releases).
 
-- **macOS**: unzip `linecon0-macos-*.app.zip` (`arm64` for Apple silicon, `x64` for Intel). Until releases
-  are notarized, macOS blocks it at first. Either run
-  `xattr -dr com.apple.quarantine linecon0.app`, or try to open it once and then choose
-  Open Anyway under System Settings > Privacy & Security. `linecon-macos-*-cli.tar.gz` is the same
-  program as a bare executable for terminal use, with no app icon.
+- **macOS**: unzip `linecon0-macos-*.app.zip` (`arm64` for Apple silicon, `x64` for Intel) and drag `linecon0.app` to
+  Applications. Releases from v0.0.1-alpha.15 are signed and notarized. `linecon-macos-*-cli.tar.gz` is the same program
+  as a bare executable for terminal use, with no app icon.
 - **Linux**: unpack `linecon-linux-*.tar.gz` and run `./linecon`.
 - **Windows**: run `linecon-windows-x64.exe`. SmartScreen may warn, since it is unsigned. See the
   [code signing policy](docs/code-signing-policy.md). A console window may flash when starting it from Explorer.
@@ -80,7 +78,8 @@ keeps config, known hosts and logs in a `linecon-data` folder beside it.
 Drop sessions from another tool on the window to import them: a SecureCRT XML export or Sessions folder, PuTTY or
 KiTTY `.reg` files and portable sessions, or an OpenSSH config. Folders are kept. SecureCRT passwords are decrypted
 into your OS secret store, asking for its configuration passphrase if you set one. Other tools' saved passwords are left
-behind.
+behind. A SecureCRT export can also hold your saved credentials and private keys, so treat it like a password file and
+delete it afterwards.
 
 Drop an iTerm2 `.itermcolors` or Windows Terminal `.json` scheme on the window to import it.
 
@@ -112,5 +111,6 @@ Needs Rust, CMake and a C compiler. Tests use Docker for the legacy SSH server w
 
 ## License
 
-MIT. See [LICENSE](LICENSE). PuTTY is MIT licensed by Simon Tatham and contributors.
-JetBrains Mono and Inter are under the SIL Open Font License; see `crates/linecon/assets/fonts`.
+MIT. See [LICENSE](LICENSE). PuTTY is MIT licensed by Simon Tatham and contributors, and JetBrains Mono and Inter are
+under the SIL Open Font License. `linecon --licenses` prints every notice the program carries, including its
+dependencies'. linecon0 is built from PuTTY's main branch at the commit `linecon --version` shows, not a tagged release.

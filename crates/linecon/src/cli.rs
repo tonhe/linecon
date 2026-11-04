@@ -20,6 +20,7 @@ linecon0 (line con 0)
 
 usage:
   linecon --version
+  linecon --licenses
   linecon ssh <host> [port] <user> [--legacy] [--ssh1]
   linecon telnet <host> [port]
   linecon raw <host> <port>
@@ -58,6 +59,10 @@ pub fn run(args: Vec<String>) -> i32 {
     }
     if flags.contains(&"--help") {
         print!("{USAGE}");
+        return 0;
+    }
+    if flags.contains(&"--licenses") {
+        print!("{}", licenses());
         return 0;
     }
     if flags.contains(&"--version") {
@@ -461,6 +466,18 @@ fn report_failure(reason: &str, settings: &Settings, policy: &AlgorithmPolicy) {
 }
 
 #[cfg(test)]
+mod licence_tests {
+    #[test]
+    fn the_notices_are_in_the_program() {
+        let text = super::licenses();
+        assert!(text.contains("Simon Tatham"));
+        assert!(text.contains("Permission is hereby granted"));
+        assert!(text.contains("SIL OPEN FONT LICENSE"));
+        assert!(text.contains("alacritty_terminal"));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -495,4 +512,14 @@ mod tests {
         assert_eq!(run(&mut e, b"~"), "");
         assert_eq!(run(&mut e, b"."), "<QUIT>");
     }
+}
+
+/// Everything that has to travel with the program, all inside the one file it ships as.
+pub fn licenses() -> String {
+    format!(
+        "linecon0\n--------\n{}\n\nPuTTY\n-----\n{}\n\n{}",
+        include_str!("../../../LICENSE").trim(),
+        include_str!("../../../vendor/putty/LICENCE").trim(),
+        include_str!("../assets/NOTICES.txt"),
+    )
 }

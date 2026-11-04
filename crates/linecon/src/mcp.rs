@@ -5,9 +5,9 @@
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -42,6 +42,12 @@ const MAX_INPUT: usize = 64 * 1024;
 const MAX_SCROLLBACK: u64 = 10_000;
 const MAX_LINE: u64 = 1024 * 1024;
 const FALLBACK_PROTOCOL: &str = "2025-06-18";
+/// Versions of the protocol this server speaks. Anything else gets the newest.
+const PROTOCOLS: [&str; 3] = ["2024-11-05", "2025-03-26", FALLBACK_PROTOCOL];
+/// More than a few agents at once would be odd, and each connection holds a thread.
+const MAX_CONNECTIONS: usize = 8;
+/// How long a connection may sit without presenting the token.
+const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn tool_error(message: &str) -> Value {
     json!({ "content": [{ "type": "text", "text": message }], "isError": true })
@@ -178,6 +184,7 @@ pub fn handle(host: &dyn Host, message: &Value) -> Option<Value> {
             let version = params
                 .get("protocolVersion")
                 .and_then(Value::as_str)
+                .filter(|v| PROTOCOLS.contains(v))
                 .unwrap_or(FALLBACK_PROTOCOL);
             json!({
                 "protocolVersion": version,
@@ -219,7 +226,14 @@ fn serve_connection(
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     let mut authenticated = false;
+    let connected = Instant::now();
     while !stop.load(Ordering::SeqCst) {
+        if !authenticated && connected.elapsed() > AUTH_TIMEOUT {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "no token presented",
+            ));
+        }
         let n = match read_line_limited(&mut reader, &mut line) {
             Ok(n) => n,
             Err(e)
@@ -236,7 +250,7 @@ fn serve_connection(
             return Ok(());
         }
         if !authenticated {
-            if line.trim_end() != token {
+            if !same_token(line.trim_end(), token) {
                 return Err(io::Error::new(io::ErrorKind::PermissionDenied, "bad token"));
             }
             authenticated = true;
@@ -256,6 +270,15 @@ fn serve_connection(
         }
     }
     Ok(())
+}
+
+/// Takes the same time however much of it matches.
+fn same_token(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |difference, (x, y)| difference | (x ^ y))
+            == 0
 }
 
 fn new_token() -> io::Result<String> {
@@ -296,14 +319,21 @@ impl McpServer {
         write_rendezvous(rendezvous, port, &token)?;
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
+        let connections = Arc::new(AtomicUsize::new(0));
         std::thread::spawn(move || {
             while !flag.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        if connections.load(Ordering::SeqCst) >= MAX_CONNECTIONS {
+                            continue; // dropping it closes it
+                        }
+                        connections.fetch_add(1, Ordering::SeqCst);
                         let (token, host, flag) = (token.clone(), host.clone(), flag.clone());
+                        let connections = connections.clone();
                         std::thread::spawn(move || {
                             let _ = stream.set_nonblocking(false);
                             let _ = serve_connection(stream, &token, host.as_ref(), &flag);
+                            connections.fetch_sub(1, Ordering::SeqCst);
                         });
                     }
                     Err(_) => std::thread::sleep(Duration::from_millis(100)),
@@ -500,6 +530,16 @@ mod tests {
         .unwrap();
         assert_eq!(init["id"], 7);
         assert_eq!(init["result"]["protocolVersion"], "2025-03-26");
+        let odd = handle(
+            &h,
+            &json!({ "jsonrpc": "2.0", "id": 9, "method": "initialize",
+            "params": { "protocolVersion": "<script>" } }),
+        )
+        .unwrap();
+        assert_eq!(odd["result"]["protocolVersion"], FALLBACK_PROTOCOL);
+        assert!(same_token("abc", "abc"));
+        assert!(!same_token("abc", "abd"));
+        assert!(!same_token("abc", "abcd"));
         assert!(handle(
             &h,
             &json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })
