@@ -6,6 +6,11 @@ set -eu
 dist="$1"
 version="${2#v}"
 notarized="$3"
+# Once programs carry a public key, a release that cannot update them is a mistake.
+if [ -z "${UPDATE_SIGNING_KEY:-}" ] && [ -s packaging/update-public-key.txt ]; then
+  echo "programs expect signed updates, and UPDATE_SIGNING_KEY is missing" >&2
+  exit 1
+fi
 if [ -z "${UPDATE_SIGNING_KEY:-}" ]; then
   echo "UPDATE_SIGNING_KEY is not set; this release will not offer itself as an update"
   exit 0

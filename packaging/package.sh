@@ -44,9 +44,12 @@ sign_and_notarize() {
   sign --identifier io.github.tonhe.linecon "$bare"
   cp "$bare" "$app_path/Contents/MacOS/linecon"
   sign "$app_path"
+  # Checks the verdict too: a rejected submission can still exit cleanly.
   notarize() {
+    verdict="$work/notarytool.txt"
     xcrun notarytool submit "$1" --key "$work/key.p8" --key-id "$APPLE_API_KEY_ID" \
-      --issuer "$APPLE_API_ISSUER" --wait --timeout 30m
+      --issuer "$APPLE_API_ISSUER" --wait --timeout 30m | tee "$verdict"
+    grep -q "status: Accepted" "$verdict"
   }
   ditto -c -k --keepParent "$app_path" "$work/app.zip"
   notarize "$work/app.zip"
@@ -72,7 +75,9 @@ case "$name" in
     cp target/release/linecon.exe "dist/linecon-$name.exe"
     ;;
   macos-*)
-    version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+    # The release's own number where there is one. CFBundleVersion only allows digits and dots.
+    version=${LINECON_RELEASE#v}
+    version=${version:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}
     app=dist/linecon0.app
     mkdir -p "$app/Contents/MacOS"
     cp target/release/linecon "$app/Contents/MacOS/linecon"
@@ -88,6 +93,10 @@ case "$name" in
     test -s "$app/Contents/Resources/linecon.icns"
     tar_dir=$(mktemp -d)
     cp target/release/linecon "$tar_dir/linecon"
+    if [ "${GITHUB_REF_TYPE:-}" = tag ] && [ -z "${MACOS_CERT_P12:-}${APPLE_API_KEY_P8:-}" ]; then
+      echo "a release must be signed, and the signing secrets are missing" >&2
+      exit 1
+    fi
     if [ -n "${MACOS_CERT_P12:-}${APPLE_API_KEY_P8:-}" ]; then
       sign_and_notarize "$app" "$tar_dir/linecon"
     else

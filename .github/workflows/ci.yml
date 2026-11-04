@@ -16,15 +16,27 @@ jobs:
   lint:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Licence notices are current
+        run: python3 packaging/notices.py --check
+
+  audit:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
+      - name: Known vulnerabilities in dependencies
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
 
   build:
     name: ${{ matrix.name }}
@@ -41,19 +53,21 @@ jobs:
     env:
       LINECON_REQUIRE_DOCKER: ${{ matrix.require_docker }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@1.99.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
+      # A signed build starts from clean, with nothing carried over from another run.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        if: github.ref_type != 'tag'
       - name: Test
         shell: bash
         run: |
           # An empty variable still counts as set for the skip check.
           if [ -z "$LINECON_REQUIRE_DOCKER" ]; then unset LINECON_REQUIRE_DOCKER; fi
-          cargo test --workspace
+          cargo test --workspace --locked
       - name: Build release binary
-        run: cargo build --release -p linecon
+        run: cargo build --release --locked -p linecon
       - name: Smoke test release binary
         shell: bash
         run: target/release/linecon --version
@@ -63,7 +77,7 @@ jobs:
       - name: Open the real window
         shell: bash
         run: packaging/smoke.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: screen-${{ matrix.name }}
@@ -71,15 +85,15 @@ jobs:
           if-no-files-found: ignore
       - name: Package
         shell: bash
-        # Tags only: nothing else needs these, and pull requests must never see them.
+        # Mac jobs on tags only: nothing else needs these, and pull requests must never see them.
         env:
-          MACOS_CERT_P12: ${{ github.ref_type == 'tag' && secrets.MACOS_CERT_P12 || '' }}
-          MACOS_CERT_PASSWORD: ${{ github.ref_type == 'tag' && secrets.MACOS_CERT_PASSWORD || '' }}
-          APPLE_API_KEY_P8: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY_P8 || '' }}
-          APPLE_API_KEY_ID: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY_ID || '' }}
-          APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && secrets.APPLE_API_ISSUER || '' }}
+          MACOS_CERT_P12: ${{ github.ref_type == 'tag' && runner.os == 'macOS' && secrets.MACOS_CERT_P12 || '' }}
+          MACOS_CERT_PASSWORD: ${{ github.ref_type == 'tag' && runner.os == 'macOS' && secrets.MACOS_CERT_PASSWORD || '' }}
+          APPLE_API_KEY_P8: ${{ github.ref_type == 'tag' && runner.os == 'macOS' && secrets.APPLE_API_KEY_P8 || '' }}
+          APPLE_API_KEY_ID: ${{ github.ref_type == 'tag' && runner.os == 'macOS' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
         run: packaging/package.sh "${{ matrix.name }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linecon-${{ matrix.name }}
           path: dist/*
@@ -87,13 +101,13 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, build]
+    needs: [lint, audit, build]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           # Only the builds: CI's screenshots are artifacts too.
           pattern: linecon-*
