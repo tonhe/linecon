@@ -231,3 +231,12 @@ where nobody could find them. Only a selected folder decides, the dialog shows a
 result is revealed. There is no special default folder: the top level is that, and clicking empty space returns to it.
 A new session is a dialog with a Save button and nothing exists until then. Editing an existing one still saves as you
 go, shortly after each change, and the panel says so.
+
+## 2026-11-05: With no GPU the program paints its own window
+
+Cloud desktops and jump boxes are where this tool gets used, and they have no GPU. Windows offers them Direct3D emulated
+in software, and on a four core machine that took every core to reach 8 frames a second. Building a frame took under a
+millisecond, so no tuning of the program could help. Those machines now use a small rasterizer and a plain window
+surface, which reached 30 frames a second on the same machine at a few percent of one core. The ready-made backend for
+this tracks an older egui, and what egui draws is simple enough to own. On this path the session manager is a panel in
+the main window, and there is no screen reader support yet.

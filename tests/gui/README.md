@@ -12,3 +12,5 @@ Each step prints PASS or FAIL and saves screenshots. Look at the screenshots too
 not that it looks right. Text is read with OCR, which misreads some characters, so checks match loosely.
 
 Run these before tagging a release. They cover Linux only. macOS and Windows window behaviour still needs a person.
+
+To run them on the path used by machines with no GPU, set `LINECON_RENDERER=cpu` for `tests/gui/run.sh`.

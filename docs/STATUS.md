@@ -18,6 +18,8 @@
   dynamic) and ssh-agent login, tested against the Docker server. Changed host keys block. New hosts can be trusted
   automatically by a global setting; a changed key still asks.
 
+- Machines with no GPU paint with the processor directly. Forced with `LINECON_RENDERER=cpu`.
+
 - Imports from ~/.ssh/config, PuTTY and KiTTY (registry, .reg, portable files) and SecureCRT, by palette
   or by dropping files on the window. SecureCRT passwords go to the secret store, and other tools' stored passwords are not imported. Snippets with folder scope.
 
