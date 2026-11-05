@@ -281,10 +281,12 @@ def menus():
 def manager_search():
     key("ctrl+shift+o")
     wait("New folder")
+    # Only a search that received the text can say this.
     typed("findme")
-    wait("findme")
+    wait("Nothing matches")
     shot("manager-search")
     key(*["BackSpace"] * 6)
+    gone("Nothing matches")
     click("Close", 0)
     gone("New folder")
 

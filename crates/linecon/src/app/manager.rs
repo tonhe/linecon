@@ -100,6 +100,8 @@ impl App {
             .fill(chrome.sidebar)
             .inner_margin(Margin::same(10))
             .show(ui, |ui| {
+                // Short lists still fill the window, which would otherwise show black below.
+                ui.set_min_size(ui.available_size());
                 let query = self.manager_search.trim().to_lowercase();
                 if query.is_empty() {
                     self.session_tree(ui, chrome);
