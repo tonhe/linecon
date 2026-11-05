@@ -29,6 +29,13 @@ time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
 egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
 
 
+# Painting with the processor where there is no GPU. Mac always has one.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+egui-winit = { version = "0.37", default-features = false, features = ["clipboard", "links", "x11", "wayland"] }
+pollster = "1"
+softbuffer = { version = "0.4", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"] }
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.17", default-features = false }
 

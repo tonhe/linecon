@@ -1049,9 +1049,12 @@ impl App {
     }
 
     /// Set once, when the window opens on a machine with no usable GPU, like a cloud desktop.
-    pub fn set_software_rendering(&mut self, ctx: &egui::Context) {
+    pub fn set_software_rendering(&mut self, _ctx: &egui::Context) {
         self.software_rendering = true;
-        ctx.tessellation_options_mut(|t| t.feathering = false);
+    }
+
+    pub fn save_before_exit(&mut self) {
+        self.save_if_needed();
     }
 
     /// Draws everything. Separate from the eframe trait so tests can drive it.
