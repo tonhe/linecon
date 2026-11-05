@@ -902,7 +902,11 @@ impl App {
                     self.dirty = true;
                     self.save_if_needed();
                     if self.save_error.is_none() {
-                        self.info = Some(format!("Saved {name}."));
+                        let place = draft
+                            .parent
+                            .and_then(|id| folders.iter().find(|(f, _)| *f == id))
+                            .map_or("the top level", |(_, path)| path.as_str());
+                        self.info = Some(format!("Saved {name} to {place}."));
                     }
                     if matches!(choice, NewSessionOutcome::SaveAndConnect) {
                         self.open_saved(id);

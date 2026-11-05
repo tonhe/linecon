@@ -295,7 +295,7 @@ def wait_whole_screen(text, present=True, timeout=15):
 @step("an open session and a focused field leave the window idle")
 def idle_cpu():
     # Redrawing flat out looks fine in every screenshot. Only the CPU shows it.
-    click("user@host", 0)
+    click_xy(*QUICK_BOX)
     sh("xdotool", "mousemove", "1250", "780")
     time.sleep(1)
     pid = sh("pgrep", "-x", "linecon").stdout.split()[0]
@@ -307,8 +307,8 @@ def idle_cpu():
     before = ticks()
     time.sleep(5)
     used = (ticks() - before) / os.sysconf("SC_CLK_TCK") / 5
-    assert used < 0.5, f"using {used * 100:.0f}% of a core while idle"
     click_xy(800, 600)
+    assert used < 0.5, f"using {used * 100:.0f}% of a core while idle"
 
 
 @step("the session manager opens ready to search")

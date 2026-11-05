@@ -110,20 +110,21 @@ impl App {
             || self.new_session.is_some()
             || !self.imported_passwords.locked.is_empty();
         let has_pending = entry.pane.shared.pending.lock().unwrap().is_some();
-        // A field that had the keyboard last frame may have just given it up on this very
-        // key, which was for the field. The terminal starts listening from the next frame.
+        // A field that had the keyboard last frame may have just given it up on this very key,
+        // which was for the field. Only these keys do that. Anything else typed once a field
+        // is gone, closed by a click say, is for the device.
         let keyboard_was_elsewhere = self
             .focus_last_frame
             .is_some_and(|last| last != terminal_id(id));
-        // Only as the keyboard comes back. While a field holds it nothing here is waiting, and
-        // asking anyway would redraw flat out for as long as the field has focus.
-        if keyboard_was_elsewhere && !self.other_widget_has_focus(&ctx) {
-            ctx.request_repaint();
-        }
+        let leaving_key = ctx.input(|i| {
+            [Key::Enter, Key::Tab, Key::Escape]
+                .into_iter()
+                .any(|key| i.key_pressed(key))
+        });
         let focused = is_focused_pane
             && !overlay_open
             && !has_pending
-            && !keyboard_was_elsewhere
+            && !(keyboard_was_elsewhere && leaving_key)
             && !self.other_widget_has_focus(&ctx);
 
         let entry = self.panes.get_mut(&id).unwrap();

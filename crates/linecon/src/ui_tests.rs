@@ -2775,7 +2775,7 @@ fn a_new_session_saves_at_the_top_level_and_cancel_leaves_nothing() {
     let id = session_named(h.state(), "10.0.0.9").expect("saved");
     assert!(h.state().config.nodes.iter().any(|node| node.id() == id));
     assert!(h.query_all_by_label("10.0.0.9").next().is_some());
-    h.get_by_label_contains("Saved 10.0.0.9");
+    h.get_by_label_contains("Saved 10.0.0.9 to the top level.");
 }
 
 /// A selected folder is where it goes, and the folder opens so the result can be seen.
@@ -2846,4 +2846,59 @@ fn only_a_selected_folder_decides_where_new_things_go() {
     );
     s.app.selected_node_for_test(folder);
     assert_eq!(s.app.selected_folder_for_test(), Some(folder));
+}
+
+/// The first key after closing a field belongs to the device. Losing it turned `exit` into
+/// `xit` on a real switch. That needed a window idling between frames, so the window checks
+/// are what catch that case: here the harness always draws the frame that hid it.
+#[test]
+fn the_first_key_after_a_field_closes_reaches_the_device() {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        tx.send(Vec::new()).unwrap();
+        let mut buf = [0u8; 64];
+        while let Ok(n) = stream.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut h = harness(App::new(location()));
+    h.run_steps(3);
+    h.state_mut().quick_open(&format!("raw://127.0.0.1:{port}"));
+    // A busy machine can take a while to connect, and typing before then proves nothing.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while rx.try_recv().is_err() {
+        assert!(std::time::Instant::now() < deadline, "never connected");
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    while std::time::Instant::now() < until {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let ctx = h.ctx.clone();
+    h.state_mut()
+        .run_command_for_test(&ctx, crate::app::Command::GlobalSettings);
+    h.run_steps(3);
+    h.get_all_by_role(egui::accesskit::Role::TextInput)
+        .last()
+        .unwrap()
+        .click();
+    h.run_steps(3);
+    assert!(h.ctx.memory(|m| m.focused()).is_some(), "no field has it");
+    h.get_all_by_label("×").next().unwrap().click();
+    assert!(h.run_ok().is_some());
+    assert!(h.query_by_label("Global settings").is_none(), "still open");
+    h.event(egui::Event::Text("e".into()));
+    h.step();
+    let got = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the key never arrived");
+    assert_eq!(got, b"e");
 }

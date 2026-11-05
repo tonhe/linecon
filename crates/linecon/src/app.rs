@@ -413,7 +413,10 @@ impl App {
         let known_hosts_error =
             match linecon_engine::hostkeys::KnownHostsFile::open(&location.known_hosts_file()) {
                 Ok(store) => {
-                    linecon_engine::set_hostkey_store(Arc::new(store));
+                    // It is one store per process, and tests run many windows side by side.
+                    if !cfg!(test) {
+                        linecon_engine::set_hostkey_store(Arc::new(store));
+                    };
                     None
                 }
                 Err(e) => Some(format!(
@@ -1125,6 +1128,17 @@ impl App {
         self.paste_overlay(&ctx, &chrome);
         self.unlock_overlay(&ctx, &chrome);
         self.focus_last_frame = ctx.memory(|m| m.focused());
+        // A field closed by this click or key keeps the keyboard until a frame has been drawn
+        // without it. Waiting for the next key to draw that frame would lose the key.
+        let acted = ctx.input(|i| {
+            i.pointer.any_released()
+                || i.events
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))
+        });
+        if acted {
+            ctx.request_repaint();
+        }
         self.poll_imported_passwords();
         self.imported_passphrase_overlay(&ctx, &chrome);
         self.agent_proposal_overlay(&ctx, &chrome);
