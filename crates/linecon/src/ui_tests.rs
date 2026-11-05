@@ -2934,3 +2934,35 @@ fn deleting_asks_and_the_keyboard_keeps_it() {
     assert_eq!(h.state().config.nodes.len(), count - 1);
     assert!(h.state().config.find(first).is_none());
 }
+
+/// Opening a session goes to it, however it was opened from the manager.
+#[test]
+fn opening_from_the_session_manager_closes_it_and_shows_the_session() {
+    let s = sample();
+    let mut h = harness(s.app);
+    h.run_steps(2);
+    h.key_press_modifiers(app_shortcut(), egui::Key::O);
+    h.run_steps(3);
+    assert!(h.state().manager_open_for_test());
+    // The search has the keyboard: type, take the second result with the arrow, press Enter.
+    h.event(egui::Event::Text("core-sw".into()));
+    h.run_steps(3);
+    h.key_press(egui::Key::ArrowDown);
+    h.run_steps(3);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(4);
+    assert!(!h.state().manager_open_for_test(), "still open");
+    assert_eq!(h.state().tab_count_for_test(), 1);
+    assert_eq!(h.state().tab_title_for_test().as_deref(), Some("core-sw2"));
+
+    // Clicking a result does the same.
+    h.key_press_modifiers(app_shortcut(), egui::Key::O);
+    h.run_steps(3);
+    assert!(h.state().manager_open_for_test());
+    h.event(egui::Event::Text("edge-rtr1".into()));
+    h.run_steps(3);
+    h.get_all_by_label("edge-rtr1").last().unwrap().click();
+    h.run_steps(4);
+    assert!(!h.state().manager_open_for_test(), "still open");
+    assert_eq!(h.state().tab_count_for_test(), 2);
+}

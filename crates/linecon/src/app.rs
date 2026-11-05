@@ -264,6 +264,11 @@ pub struct App {
     manager_search: String,
     /// The window just opened, and its search field should get the keyboard.
     manager_wants_focus: bool,
+    /// How many tabs there were, to notice one being opened by any route.
+    manager_tabs_seen: usize,
+    /// The search result Enter would open.
+    manager_pick: usize,
+    manager_enter: bool,
     new_session: Option<inspector::NewSessionDraft>,
     settings_section: inspector::SettingsSection,
     settings_wants_focus: bool,
@@ -527,6 +532,9 @@ impl App {
             manager_open: false,
             manager_search: String::new(),
             manager_wants_focus: false,
+            manager_tabs_seen: 0,
+            manager_pick: 0,
+            manager_enter: false,
             new_session: None,
             settings_section: inspector::SettingsSection::General,
             settings_wants_focus: false,

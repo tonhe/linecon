@@ -10,8 +10,19 @@ impl App {
         if !self.manager_open {
             self.manager_wants_focus = true;
             self.manager_position = None;
+            self.manager_tabs_seen = self.tabs.len();
             return;
         }
+        // What was just opened is in the main window, so that is where to go.
+        if self.tabs.len() > self.manager_tabs_seen {
+            self.manager_tabs_seen = self.tabs.len();
+            self.manager_open = false;
+            self.manager_search.clear();
+            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
+            ctx.request_repaint();
+            return;
+        }
+        self.manager_tabs_seen = self.tabs.len();
         const SIZE: egui::Vec2 = vec2(900.0, 600.0);
         if self.manager_position.is_none() {
             // Over the main window, whichever monitor that is on.
@@ -28,7 +39,6 @@ impl App {
         if let Some(position) = self.manager_position {
             builder = builder.with_position(position);
         }
-        let tabs_before = self.tabs.len();
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("linecon-session-manager"),
             builder,
@@ -43,9 +53,9 @@ impl App {
                 }
             },
         );
-        // What was just opened is in the main window.
-        if self.tabs.len() > tabs_before {
-            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
+        // Opened during this frame: the next one closes the window.
+        if self.tabs.len() > self.manager_tabs_seen {
+            ctx.request_repaint();
         }
     }
 
@@ -75,12 +85,28 @@ impl App {
                 });
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
+                    let (down, up) = ui.input_mut(|i| {
+                        (
+                            i.consume_key(Modifiers::NONE, Key::ArrowDown),
+                            i.consume_key(Modifiers::NONE, Key::ArrowUp),
+                        )
+                    });
+                    self.manager_pick = if up {
+                        self.manager_pick.saturating_sub(1)
+                    } else {
+                        self.manager_pick + usize::from(down)
+                    };
                     let search = ui.add(
                         TextEdit::singleline(&mut self.manager_search)
                             .id(egui::Id::unique("linecon-manager-search"))
                             .hint_text("Search sessions")
                             .desired_width(ui.available_width() * 0.55),
                     );
+                    if search.changed() {
+                        self.manager_pick = 0;
+                    }
+                    self.manager_enter =
+                        search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                     // Asked for until the new window is really the one in front.
                     if self.manager_wants_focus {
                         search.request_focus();
@@ -144,13 +170,20 @@ impl App {
             ui.label(RichText::new("Nothing matches.").color(chrome.muted));
             return;
         }
-        let mut chosen = None;
+        let pick = self.manager_pick.min(matches.len() - 1);
+        self.manager_pick = pick;
+        let mut chosen =
+            std::mem::take(&mut self.manager_enter).then(|| matches[pick].command.clone());
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for item in matches {
+                for (index, item) in matches.into_iter().enumerate() {
                     ui.horizontal(|ui| {
-                        if ui.button(&item.label).clicked() {
+                        let row = ui.selectable_label(index == pick, &item.label);
+                        if index == pick {
+                            row.scroll_to_me(None);
+                        }
+                        if row.clicked() {
                             chosen = Some(item.command.clone());
                         }
                         ui.label(RichText::new(&item.hint).color(chrome.muted).small());

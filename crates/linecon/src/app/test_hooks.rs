@@ -167,6 +167,15 @@ impl App {
         self.selected_node = Some(id);
     }
 
+    pub fn tab_count_for_test(&self) -> usize {
+        self.tabs.len()
+    }
+
+    pub fn tab_title_for_test(&self) -> Option<String> {
+        let pane = self.focused_pane()?;
+        Some(self.panes.get(&pane)?.pane.spec.name.clone())
+    }
+
     pub fn selected_folder_for_test(&self) -> Option<Id> {
         self.selected_folder()
     }

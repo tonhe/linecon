@@ -122,6 +122,13 @@ pub(super) fn tree_rows(
         if scroll_to == Some(id) {
             response.scroll_to_me(Some(Align::Center));
         }
+        // The keyboard's double click.
+        if matches!(node, Node::Session(_))
+            && response.has_focus()
+            && ui.input(|i| i.key_pressed(Key::Enter))
+        {
+            actions.push(TreeAction::Open(id));
+        }
 
         // Settings should not be something you have to know to right-click for.
         if response.hovered() || selected == Some(id) {
