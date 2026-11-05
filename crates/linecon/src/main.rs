@@ -62,6 +62,8 @@ fn run_window(smoke: Option<std::path::PathBuf>) -> i32 {
     for renderer in renderers() {
         let options = eframe::NativeOptions {
             renderer,
+            // Flat colors have no banding to hide, and it costs every pixel on every frame.
+            dithering: std::env::var("LINECON_SOFTWARE_MODE").as_deref() == Ok("off"),
             // Each queued frame is a frame of delay between a key and its echo.
             wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
                 surface: eframe::egui_wgpu::SurfaceConfig::LOW_LATENCY,
@@ -88,6 +90,17 @@ fn run_window(smoke: Option<std::path::PathBuf>) -> i32 {
                 let wake = cc.egui_ctx.clone();
                 native_menu::install(move || wake.request_repaint());
                 let mut app = app::App::new(location);
+                // LINECON_SOFTWARE_MODE forces this on or off, to compare the two.
+                let software = match std::env::var("LINECON_SOFTWARE_MODE").as_deref() {
+                    Ok("on") => true,
+                    Ok("off") => false,
+                    _ => cc.wgpu_render_state.as_ref().is_some_and(|state| {
+                        state.adapter.get_info().device_type == eframe::wgpu::DeviceType::Cpu
+                    }),
+                };
+                if software {
+                    app.set_software_rendering(&cc.egui_ctx);
+                }
                 app.set_renderer_info(match &cc.wgpu_render_state {
                     Some(state) => {
                         let info = state.adapter.get_info();

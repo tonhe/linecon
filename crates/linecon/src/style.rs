@@ -103,6 +103,16 @@ impl Chrome {
     }
 }
 
+/// With no GPU these are paid for pixel by pixel, on every frame or forcing extra ones.
+pub fn for_software_rendering(ctx: &egui::Context) {
+    ctx.global_style_mut(|style| {
+        style.animation_time = 0.0;
+        style.visuals.popup_shadow = egui::Shadow::NONE;
+        style.visuals.window_shadow = egui::Shadow::NONE;
+        style.visuals.text_cursor.blink = false;
+    });
+}
+
 pub fn apply(ctx: &egui::Context, theme: &Theme) {
     let chrome = Chrome::from_theme(theme);
     let mut visuals = if theme.light {

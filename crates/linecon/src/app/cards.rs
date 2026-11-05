@@ -244,6 +244,7 @@ impl App {
         if !visible {
             return;
         }
+        let shadow = ui.visuals().popup_shadow;
         let mut child = ui.new_child(UiBuilder::new().max_rect(card_rect));
         child.set_max_width(wide);
         Frame::new()
@@ -251,12 +252,7 @@ impl App {
             .stroke(Stroke::new(1.0, chrome.border))
             .corner_radius(10)
             .inner_margin(Margin::same(16))
-            .shadow(egui::Shadow {
-                offset: [0, 6],
-                blur: 24,
-                spread: 0,
-                color: Color32::from_black_alpha(80),
-            })
+            .shadow(shadow)
             .show(&mut child, |ui| {
                 ui.set_width(wide - 34.0);
                 match (&pending, &status) {

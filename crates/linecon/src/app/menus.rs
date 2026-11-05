@@ -278,8 +278,8 @@ impl App {
                         }
                         ui.label(
                             RichText::new(format!(
-                                "Drawing {} frames a second",
-                                self.frame_stats.per_second
+                                "Drawing {} frames a second, {:.1} ms each to build",
+                                self.frame_stats.per_second, self.frame_stats.build_ms
                             ))
                             .color(chrome.muted),
                         );

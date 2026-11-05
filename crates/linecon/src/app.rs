@@ -274,6 +274,9 @@ pub struct App {
     /// What is drawing the window, for telling a slow software renderer from a slow program.
     renderer_info: String,
     frame_stats: FrameStats,
+    /// No GPU: every pixel is drawn by the processor, so drawing is kept to what matters.
+    software_rendering: bool,
+    last_frame_end: Instant,
     inspector: Option<InspectTarget>,
     renaming: Option<(Id, String)>,
     paste_confirm: Option<(PaneId, String)>,
@@ -298,6 +301,8 @@ struct FrameStats {
     window_start: Instant,
     frames: u32,
     per_second: u32,
+    building: Duration,
+    build_ms: f32,
     causes: String,
     file: Option<PathBuf>,
 }
@@ -308,6 +313,8 @@ impl FrameStats {
             window_start: Instant::now(),
             frames: 0,
             per_second: 0,
+            building: Duration::ZERO,
+            build_ms: 0.0,
             causes: String::new(),
             file: std::env::var_os("LINECON_FRAME_STATS").map(PathBuf::from),
         }
@@ -320,7 +327,9 @@ impl FrameStats {
             return;
         }
         self.per_second = (self.frames as f32 / elapsed.as_secs_f32()).round() as u32;
+        self.build_ms = self.building.as_secs_f32() * 1000.0 / self.frames.max(1) as f32;
         self.frames = 0;
+        self.building = Duration::ZERO;
         self.window_start = Instant::now();
         let mut causes: Vec<String> = ctx
             .repaint_causes()
@@ -337,7 +346,11 @@ impl FrameStats {
                 .append(true)
                 .open(file)
             {
-                let _ = writeln!(out, "{} frames/s: {}", self.per_second, self.causes);
+                let _ = writeln!(
+                    out,
+                    "{} frames/s, {:.1} ms each to build: {}",
+                    self.per_second, self.build_ms, self.causes
+                );
             }
         }
     }
@@ -522,6 +535,8 @@ impl App {
             dirty_since: None,
             renderer_info: String::new(),
             frame_stats: FrameStats::from_env(),
+            software_rendering: false,
+            last_frame_end: Instant::now(),
             inspector: None,
             renaming: None,
             paste_confirm: None,
@@ -1029,12 +1044,33 @@ impl App {
         }
     }
 
-    /// Draws everything. Separate from the eframe trait so tests can drive it.
     pub fn set_renderer_info(&mut self, info: String) {
         self.renderer_info = info;
     }
 
+    /// Set once, when the window opens on a machine with no usable GPU, like a cloud desktop.
+    pub fn set_software_rendering(&mut self, ctx: &egui::Context) {
+        self.software_rendering = true;
+        ctx.tessellation_options_mut(|t| t.feathering = false);
+    }
+
+    /// Draws everything. Separate from the eframe trait so tests can drive it.
     pub fn show(&mut self, ui: &mut Ui) {
+        let started = Instant::now();
+        self.show_frame(ui);
+        self.frame_stats.building += started.elapsed();
+        // Input arriving faster than this is drawn together, instead of each mouse move
+        // costing a whole window painted by the processor.
+        const SOFTWARE_FRAME: Duration = Duration::from_millis(33);
+        if self.software_rendering {
+            if let Some(left) = SOFTWARE_FRAME.checked_sub(self.last_frame_end.elapsed()) {
+                std::thread::sleep(left);
+            }
+            self.last_frame_end = Instant::now();
+        }
+    }
+
+    fn show_frame(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.frame_stats.count(&ctx);
         if self.repaint.is_none() {
@@ -1048,6 +1084,9 @@ impl App {
         let chrome_theme = self.chrome_theme();
         if self.applied_chrome.as_deref() != Some(chrome_theme.name.as_str()) {
             style::apply(&ctx, &chrome_theme);
+            if self.software_rendering {
+                style::for_software_rendering(&ctx);
+            }
             self.applied_chrome = Some(chrome_theme.name.clone());
         }
         let chrome = Chrome::from_theme(&chrome_theme);
