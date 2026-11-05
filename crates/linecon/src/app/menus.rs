@@ -266,8 +266,8 @@ impl App {
                     .show(ui, |ui| {
                         ui.set_width(350.0);
                         ui.label(RichText::new("linecon0").size(20.0));
-                        ui.label(RichText::new("line con 0").monospace().color(chrome.muted));
                         ui.add_space(6.0);
+                        ui.label(format!("By {AUTHOR}"));
                         ui.label(format!(
                             "Version {} (PuTTY {})",
                             linecon_engine::VERSION,

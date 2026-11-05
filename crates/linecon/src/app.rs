@@ -279,6 +279,8 @@ pub struct App {
     pending_delete: Option<Id>,
 }
 
+const AUTHOR: &str = "Tony Mattke";
+
 /// A shortcut as this platform writes it.
 fn shortcut(key: &str) -> String {
     if cfg!(target_os = "macos") {

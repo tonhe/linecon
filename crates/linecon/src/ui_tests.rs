@@ -2287,6 +2287,8 @@ fn about_shows_the_version_and_closes() {
     h.state_mut().open_about_for_test();
     h.run_steps(3);
     h.get_by_label_contains("Version ");
+    h.get_by_label("By Tony Mattke");
+    assert!(h.query_by_label("line con 0").is_none());
     h.get_by_label("Close").click();
     h.run_steps(3);
     assert!(h.query_by_label_contains("Version ").is_none());
@@ -2642,4 +2644,11 @@ fn the_session_settings_shortcut_is_in_its_menu_and_works() {
     h.key_press_modifiers(app_shortcut(), egui::Key::I);
     h.run_steps(3);
     h.get_by_label("Connect");
+}
+
+#[test]
+fn the_first_screen_is_captured_for_review() {
+    let mut h = harness(App::new(location()));
+    h.run_steps(3);
+    screenshot(&mut h, "first-screen");
 }

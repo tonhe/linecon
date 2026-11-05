@@ -354,21 +354,27 @@ impl App {
             FontId::proportional(30.0),
             chrome.text,
         );
-        y += 30.0;
-        painter.text(
-            pos2(center, y),
-            Align2::CENTER_CENTER,
-            "line con 0",
-            FontId::monospace(14.0),
-            chrome.muted,
-        );
-        y += 40.0;
+        y += 32.0;
+        for line in [
+            format!("by {AUTHOR}"),
+            format!("Version {}", linecon_engine::VERSION),
+        ] {
+            painter.text(
+                pos2(center, y),
+                Align2::CENTER_CENTER,
+                line,
+                FontId::proportional(13.0),
+                chrome.muted,
+            );
+            y += 20.0;
+        }
+        y += 22.0;
         let shortcut = if cfg!(target_os = "macos") {
             "⌘"
         } else {
             "Ctrl+Shift+"
         };
-        for hint in [
+        let mut hints = vec![
             if self.config.use_session_manager {
                 format!("{shortcut}O  session manager")
             } else {
@@ -376,8 +382,12 @@ impl App {
             },
             format!("{shortcut}K  find or connect"),
             format!("{shortcut}P  command palette"),
-            format!("{shortcut}B  toggle sidebar"),
-        ] {
+        ];
+        // With the session manager in its place, there is no sidebar to toggle.
+        if !self.config.use_session_manager {
+            hints.push(format!("{shortcut}B  toggle sidebar"));
+        }
+        for hint in hints {
             painter.text(
                 pos2(center, y),
                 Align2::CENTER_CENTER,
