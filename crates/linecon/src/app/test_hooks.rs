@@ -163,6 +163,18 @@ impl App {
         self.spec_for(name, None, target, "lab")
     }
 
+    pub fn selected_node_for_test(&mut self, id: Id) {
+        self.selected_node = Some(id);
+    }
+
+    pub fn selected_folder_for_test(&self) -> Option<Id> {
+        self.selected_folder()
+    }
+
+    pub fn start_new_session_in_selection_for_test(&mut self) {
+        self.start_new_session(self.selected_folder(), false);
+    }
+
     pub fn mark_dirty_for_test(&mut self) {
         self.dirty = true;
     }

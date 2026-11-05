@@ -25,6 +25,7 @@ pub(super) fn tree_rows(
     open: &HashSet<Id>,
     chrome: &Chrome,
     selected: Option<Id>,
+    scroll_to: Option<Id>,
     renaming: &mut Option<(Id, String)>,
     actions: &mut Vec<TreeAction>,
 ) {
@@ -118,6 +119,10 @@ pub(super) fn tree_rows(
             }
         }
 
+        if scroll_to == Some(id) {
+            response.scroll_to_me(Some(Align::Center));
+        }
+
         // Settings should not be something you have to know to right-click for.
         if response.hovered() || selected == Some(id) {
             let button =
@@ -205,6 +210,7 @@ pub(super) fn tree_rows(
                     open,
                     chrome,
                     selected,
+                    scroll_to,
                     renaming,
                     actions,
                 );
@@ -243,10 +249,10 @@ impl App {
                 let add = ui.button("+").on_hover_text("New session or folder");
                 egui::Popup::menu(&add).show(|ui| {
                     if ui.button("New session").clicked() {
-                        self.add_session_near_selection();
+                        self.start_new_session(self.selected_folder(), false);
                     }
                     if ui.button("New folder").clicked() {
-                        self.add_folder_near_selection();
+                        self.add_folder_in_selection();
                     }
                     ui.separator();
                     if ui.button("Global settings").clicked() {
@@ -343,7 +349,8 @@ impl App {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                let nodes = self.config.nodes.clone();
+                // Out and back, not cloned: this runs every frame, over every session.
+                let nodes = std::mem::take(&mut self.config.nodes);
                 tree_rows(
                     ui,
                     &nodes,
@@ -351,12 +358,22 @@ impl App {
                     &open,
                     chrome,
                     self.selected_node,
+                    self.scroll_to_node.take(),
                     &mut self.renaming,
                     &mut actions,
                 );
+                self.config.nodes = nodes;
                 if self.config.nodes.is_empty() {
                     ui.add_space(12.0);
                     ui.label(RichText::new("No saved sessions yet.").color(chrome.muted));
+                }
+                // Clicking the empty space below clears the selection, back to the top level.
+                // Short of the bottom by the row spacing, or it would always need a scrollbar.
+                let height = ui.available_height() - ui.spacing().item_spacing.y;
+                let below = ui
+                    .allocate_response(vec2(ui.available_width(), height.max(0.0)), Sense::click());
+                if below.clicked() {
+                    self.selected_node = None;
                 }
                 // Dropping on empty space moves back to the top level.
                 let rest = ui.allocate_response(ui.available_size(), Sense::click());
@@ -369,37 +386,32 @@ impl App {
         }
     }
 
-    pub(super) fn add_session_near_selection(&mut self) {
-        let parent = self.selection_parent();
-        let target = Target {
-            host: "new-host".into(),
-            ..Default::default()
-        };
-        if let Some(id) = self.config.add_session(parent, "New session", target) {
-            self.selected_node = Some(id);
-            self.inspector = Some(InspectTarget::Node(id));
-            self.dirty = true;
-        }
+    /// The folder new things go into: one that is selected. A selected session does not
+    /// count, since that row being highlighted says nothing about where a new one belongs.
+    pub(super) fn selected_folder(&self) -> Option<Id> {
+        let selected = self.selected_node?;
+        matches!(self.config.find(selected)?, Node::Folder(_)).then_some(selected)
     }
 
-    pub(super) fn add_folder_near_selection(&mut self) {
-        let parent = self.selection_parent();
-        if let Some(id) = self.config.add_folder(parent, "New folder") {
-            self.selected_node = Some(id);
+    pub(super) fn start_new_session(&mut self, parent: Option<Id>, in_manager: bool) {
+        self.new_session = Some(inspector::NewSessionDraft {
+            name: String::new(),
+            target: Target::default(),
+            parent,
+            in_manager,
+            wants_focus: true,
+        });
+    }
+
+    pub(super) fn add_folder_in_selection(&mut self) {
+        if let Some(id) = self.config.add_folder(self.selected_folder(), "New folder") {
+            self.reveal_in_tree(id);
             self.renaming = Some((id, "New folder".to_string()));
             self.dirty = true;
         }
     }
 
-    pub(super) fn selection_parent(&self) -> Option<Id> {
-        let selected = self.selected_node?;
-        match self.config.find(selected)? {
-            Node::Folder(folder) => Some(folder.id),
-            Node::Session(_) => self.config.ancestors(selected)?.last().map(|f| f.id),
-        }
-    }
-
-    pub(super) fn apply_tree_action(&mut self, _ctx: &egui::Context, action: TreeAction) {
+    pub(super) fn apply_tree_action(&mut self, ctx: &egui::Context, action: TreeAction) {
         match action {
             TreeAction::Select(id) => self.selected_node = Some(id),
             TreeAction::Open(id) => self.open_saved(id),
@@ -423,19 +435,12 @@ impl App {
                 }
             }
             TreeAction::NewSession(parent) => {
-                let target = Target {
-                    host: "new-host".into(),
-                    ..Default::default()
-                };
-                if let Some(id) = self.config.add_session(parent, "New session", target) {
-                    self.selected_node = Some(id);
-                    self.inspector = Some(InspectTarget::Node(id));
-                    self.dirty = true;
-                }
+                let in_manager = self.manager_open && ctx.viewport_id() != egui::ViewportId::ROOT;
+                self.start_new_session(parent, in_manager);
             }
             TreeAction::NewFolder(parent) => {
                 if let Some(id) = self.config.add_folder(parent, "New folder") {
-                    self.selected_node = Some(id);
+                    self.reveal_in_tree(id);
                     self.renaming = Some((id, "New folder".to_string()));
                     self.dirty = true;
                 }

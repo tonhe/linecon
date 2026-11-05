@@ -2,10 +2,82 @@
 
 use super::*;
 
+/// One Tab stop, as a radio group is: Tab lands on the current choice and the arrow keys
+/// change it, so reaching the host does not mean stepping over every protocol.
+fn protocol_choice(ui: &mut Ui, current: &mut Protocol) -> bool {
+    const CHOICES: [(Protocol, &str); 4] = [
+        (Protocol::Ssh, "SSH"),
+        (Protocol::Telnet, "Telnet"),
+        (Protocol::Serial, "Serial"),
+        (Protocol::Raw, "Raw"),
+    ];
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        let at = CHOICES.iter().position(|(p, _)| p == current).unwrap_or(0);
+        let mut ids = [egui::Id::NULL; CHOICES.len()];
+        for (index, (protocol, text)) in CHOICES.into_iter().enumerate() {
+            let selected = index == at;
+            let sense = if selected {
+                Sense::click()
+            } else {
+                Sense::CLICK
+            };
+            let response = ui.add(egui::Button::selectable(selected, text).sense(sense));
+            ids[index] = response.id;
+            if response.clicked() {
+                *current = protocol;
+                changed = true;
+            }
+            if selected && response.has_focus() {
+                ui.memory_mut(|m| {
+                    m.set_focus_lock_filter(
+                        response.id,
+                        egui::EventFilter {
+                            horizontal_arrows: true,
+                            ..Default::default()
+                        },
+                    );
+                });
+            }
+        }
+        if ui.memory(|m| m.has_focus(ids[at])) {
+            let step = ui.input(|i| {
+                if i.key_pressed(Key::ArrowRight) {
+                    1
+                } else if i.key_pressed(Key::ArrowLeft) {
+                    CHOICES.len() - 1
+                } else {
+                    0
+                }
+            });
+            if step != 0 {
+                let next = (at + step) % CHOICES.len();
+                *current = CHOICES[next].0;
+                changed = true;
+                ui.memory_mut(|m| m.request_focus(ids[next]));
+            }
+        }
+    });
+    changed
+}
+
+/// The parts of the settings panel, so most of it fits without scrolling.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(super) enum SettingsSection {
+    #[default]
+    General,
+    Terminal,
+    Logging,
+    Ssh,
+    Serial,
+    Snippets,
+}
+
 pub(super) fn target_editor(
     ui: &mut Ui,
     name: &mut String,
     target: &mut Target,
+    name_id: egui::Id,
     chrome: &Chrome,
 ) -> bool {
     let mut changed = false;
@@ -15,26 +87,16 @@ pub(super) fn target_editor(
     };
     let name_label = label(ui, "Name");
     changed |= ui
-        .add(TextEdit::singleline(name).desired_width(f32::INFINITY))
+        .add(
+            TextEdit::singleline(name)
+                .id(name_id)
+                .hint_text("Defaults to the host")
+                .desired_width(f32::INFINITY),
+        )
         .labelled_by(name_label)
         .changed();
     label(ui, "Protocol");
-    ui.horizontal(|ui| {
-        for (protocol, text) in [
-            (Protocol::Ssh, "SSH"),
-            (Protocol::Telnet, "Telnet"),
-            (Protocol::Serial, "Serial"),
-            (Protocol::Raw, "Raw"),
-        ] {
-            if ui
-                .selectable_label(target.protocol == protocol, text)
-                .clicked()
-            {
-                target.protocol = protocol;
-                changed = true;
-            }
-        }
-    });
+    changed |= protocol_choice(ui, &mut target.protocol);
     if target.protocol == Protocol::Serial {
         let line_label = label(ui, "Serial device");
         let ports = crate::serial_ports::list_ports();
@@ -51,6 +113,7 @@ pub(super) fn target_editor(
         changed |= ui
             .add(
                 TextEdit::singleline(&mut target.line)
+                    .id(name_id.with("host"))
                     .hint_text(if cfg!(windows) {
                         "COM3"
                     } else {
@@ -63,7 +126,11 @@ pub(super) fn target_editor(
     } else {
         let host_label = label(ui, "Host");
         changed |= ui
-            .add(TextEdit::singleline(&mut target.host).desired_width(f32::INFINITY))
+            .add(
+                TextEdit::singleline(&mut target.host)
+                    .id(name_id.with("host"))
+                    .desired_width(f32::INFINITY),
+            )
             .labelled_by(host_label)
             .changed();
         let port_label = label(ui, "Port");
@@ -176,11 +243,33 @@ pub(super) fn settings_rows(
     r: &Resolved,
     o: &mut Overrides,
     theme_names: &[String],
-    show_serial: bool,
+    section: SettingsSection,
     chrome: &Chrome,
 ) -> bool {
     let mut changed = false;
+    if section == SettingsSection::Terminal {
+        changed |= terminal_rows(ui, r, o, theme_names, chrome);
+    }
+    if section == SettingsSection::Logging {
+        changed |= logging_rows(ui, r, o, chrome);
+    }
+    if section == SettingsSection::Ssh {
+        changed |= ssh_rows(ui, r, o, chrome);
+    }
+    if section == SettingsSection::Serial {
+        changed |= serial_rows(ui, r, o, chrome);
+    }
+    changed
+}
 
+fn terminal_rows(
+    ui: &mut Ui,
+    r: &Resolved,
+    o: &mut Overrides,
+    theme_names: &[String],
+    chrome: &Chrome,
+) -> bool {
+    let mut changed = false;
     let header = row_header(ui, "Theme", &r.theme, o.theme.is_some(), chrome);
     if header.clear {
         o.theme = None;
@@ -198,6 +287,7 @@ pub(super) fn settings_rows(
                 }
             }
         });
+    combo.response.labelled_by(header.label);
     number_row!(
         ui,
         "Font size",
@@ -224,6 +314,11 @@ pub(super) fn settings_rows(
         chrome,
         changed
     );
+    changed
+}
+
+fn logging_rows(ui: &mut Ui, r: &Resolved, o: &mut Overrides, chrome: &Chrome) -> bool {
+    let mut changed = false;
     toggle_row!(ui, "Session logging", r.logging, o.logging, chrome, changed);
 
     let header = row_header(ui, "Log folder", &r.log_dir, o.log_dir.is_some(), chrome);
@@ -244,9 +339,11 @@ pub(super) fn settings_rows(
         o.log_dir = Some(dir);
         changed = true;
     }
+    changed
+}
 
-    ui.add_space(6.0);
-    ui.separator();
+fn ssh_rows(ui: &mut Ui, r: &Resolved, o: &mut Overrides, chrome: &Chrome) -> bool {
+    let mut changed = false;
     toggle_row!(
         ui,
         "Legacy algorithms",
@@ -281,7 +378,6 @@ pub(super) fn settings_rows(
             chrome,
         );
     });
-    combo.response.labelled_by(header.label);
 
     let header = row_header(ui, "Jump host", &r.jump_host, o.jump_host.is_some(), chrome);
     if header.clear {
@@ -370,10 +466,12 @@ pub(super) fn settings_rows(
         changed
     );
 
-    if show_serial {
-        ui.add_space(6.0);
-        ui.separator();
-        ui.add_space(4.0);
+    changed
+}
+
+fn serial_rows(ui: &mut Ui, r: &Resolved, o: &mut Overrides, chrome: &Chrome) -> bool {
+    let mut changed = false;
+    {
         let preset_label = ui.label(RichText::new("Console preset").size(13.0)).id;
         let preset = egui::ComboBox::from_id_salt("console-preset")
             .selected_text("Choose a cable type")
@@ -526,6 +624,41 @@ pub(super) fn order_list(
     changed
 }
 
+/// Every folder with its path, for choosing one.
+fn folder_choices(nodes: &[Node]) -> Vec<(Id, String)> {
+    fn walk(nodes: &[Node], prefix: &str, out: &mut Vec<(Id, String)>) {
+        for node in nodes {
+            if let Node::Folder(folder) = node {
+                let path = if prefix.is_empty() {
+                    folder.name.clone()
+                } else {
+                    format!("{prefix} / {}", folder.name)
+                };
+                out.push((folder.id, path.clone()));
+                walk(&folder.children, &path, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(nodes, "", &mut out);
+    out
+}
+
+pub(super) struct NewSessionDraft {
+    pub(super) name: String,
+    pub(super) target: Target,
+    pub(super) parent: Option<Id>,
+    /// Which window asked, since the dialog has to appear in that one.
+    pub(super) in_manager: bool,
+    pub(super) wants_focus: bool,
+}
+
+enum NewSessionOutcome {
+    Save,
+    SaveAndConnect,
+    Cancel,
+}
+
 impl App {
     /// Shows every setting's effective value and where it came from. Editing a
     /// value overrides it here; clearing it restores inheritance.
@@ -558,74 +691,241 @@ impl App {
                 }
             });
         });
-        ui.add_space(6.0);
+        let serial = match target {
+            InspectTarget::Node(id) => self
+                .config
+                .session(id)
+                .is_some_and(|s| s.target.protocol == Protocol::Serial),
+            InspectTarget::Root => false,
+        };
+        let mut sections = vec![
+            (SettingsSection::General, "General"),
+            (SettingsSection::Terminal, "Terminal"),
+            (SettingsSection::Logging, "Logging"),
+            (SettingsSection::Ssh, "SSH"),
+        ];
+        if !is_session || serial {
+            sections.push((SettingsSection::Serial, "Serial"));
+        }
+        if !is_session {
+            sections.push((SettingsSection::Snippets, "Snippets"));
+        }
+        if !sections.iter().any(|(s, _)| *s == self.settings_section) {
+            self.settings_section = SettingsSection::General;
+        }
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            for (section, text) in sections {
+                if ui
+                    .selectable_label(self.settings_section == section, text)
+                    .clicked()
+                {
+                    self.settings_section = section;
+                }
+            }
+        });
+        ui.separator();
 
+        let section = self.settings_section;
         let theme_names: Vec<String> = self.themes.iter().map(|t| t.name.clone()).collect();
+        let name_id = egui::Id::unique("linecon-settings-name");
         let mut connect = None;
         let mut changed = false;
+        // The footer stays put while what is above it scrolls.
+        const FOOTER: f32 = 42.0;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
+            .max_height((ui.available_height() - FOOTER).max(60.0))
             .show(ui, |ui| {
-                if let (InspectTarget::Node(id), true) = (target, is_session) {
-                    if let Some(Node::Session(session)) = self.config.find_mut(id) {
-                        changed |=
-                            target_editor(ui, &mut session.name, &mut session.target, chrome);
+                if section == SettingsSection::General {
+                    if let (InspectTarget::Node(id), true) = (target, is_session) {
+                        if let Some(Node::Session(session)) = self.config.find_mut(id) {
+                            changed |= target_editor(
+                                ui,
+                                &mut session.name,
+                                &mut session.target,
+                                name_id,
+                                chrome,
+                            );
+                        }
+                        ui.add_space(6.0);
+                        ui.separator();
                     }
-                    ui.add_space(6.0);
-                    ui.separator();
-                }
-                if let InspectTarget::Node(id) = target {
-                    if is_session && ui.button("Connect").clicked() {
-                        connect = Some(id);
+                    self.login_block(ui, target, &resolved, chrome);
+                    if target == InspectTarget::Root {
+                        ui.separator();
+                        changed |= ui
+                            .checkbox(
+                                &mut self.config.trust_new_host_keys,
+                                "Always trust and remember new host keys",
+                            )
+                            .changed();
+                        ui.label(
+                            RichText::new(
+                                "Hosts seen for the first time connect without asking, and \
+                                 their fingerprint is shown in the terminal. A key that differs \
+                                 from a remembered one always asks.",
+                            )
+                            .color(chrome.muted),
+                        );
+                        self.identities_section(ui, chrome);
                     }
-                }
-                self.login_block(ui, target, &resolved, chrome);
-                ui.separator();
-                let serial = match target {
-                    InspectTarget::Node(id) => self
-                        .config
-                        .session(id)
-                        .is_some_and(|s| s.target.protocol == Protocol::Serial),
-                    InspectTarget::Root => false,
-                };
-                let show_serial = !is_session || serial;
-                let overrides = match target {
-                    InspectTarget::Root => Some(&mut self.config.settings),
-                    InspectTarget::Node(id) => self.config.overrides_mut(id),
-                };
-                if let Some(overrides) = overrides {
-                    changed |=
-                        settings_rows(ui, &resolved, overrides, &theme_names, show_serial, chrome);
-                }
-                if !is_session {
+                } else if section == SettingsSection::Snippets {
                     changed |= self.snippets_section(ui, target, chrome);
-                }
-                if target == InspectTarget::Root {
-                    ui.separator();
-                    changed |= ui
-                        .checkbox(
-                            &mut self.config.trust_new_host_keys,
-                            "Always trust and remember new host keys",
-                        )
-                        .changed();
-                    ui.label(
-                        RichText::new(
-                            "Hosts seen for the first time connect without asking, and their \
-                             fingerprint is shown in the terminal. A key that differs from a \
-                             remembered one always asks.",
-                        )
-                        .color(chrome.muted),
-                    );
-                    self.identities_section(ui, chrome);
+                } else {
+                    let overrides = match target {
+                        InspectTarget::Root => Some(&mut self.config.settings),
+                        InspectTarget::Node(id) => self.config.overrides_mut(id),
+                    };
+                    if let Some(overrides) = overrides {
+                        changed |=
+                            settings_rows(ui, &resolved, overrides, &theme_names, section, chrome);
+                    }
                 }
             });
+        if self.settings_wants_focus {
+            self.settings_wants_focus = false;
+            if is_session && section == SettingsSection::General {
+                ui.memory_mut(|m| m.request_focus(name_id));
+            }
+        }
         if changed {
             self.dirty = true;
         }
+        ui.separator();
+        ui.horizontal(|ui| {
+            if let InspectTarget::Node(id) = target {
+                if is_session && ui.button("Connect").clicked() {
+                    connect = Some(id);
+                }
+            }
+            ui.with_layout(UiLayout::right_to_left(Align::Center), |ui| {
+                let status = if self.save_error.is_some() {
+                    RichText::new("Not saved").color(chrome.danger)
+                } else if self.dirty {
+                    RichText::new("Saving…").color(chrome.muted)
+                } else {
+                    RichText::new("Changes are saved").color(chrome.muted)
+                };
+                ui.label(status.size(12.0));
+            });
+        });
         if let Some(id) = connect {
             self.save_if_needed();
             self.open_saved(id);
         }
+    }
+
+    /// Asks for a new session. Nothing exists until it is saved.
+    pub(super) fn new_session_dialog(&mut self, ctx: &egui::Context, chrome: &Chrome) {
+        let Some(draft) = self.new_session.as_mut() else {
+            return;
+        };
+        let name_id = egui::Id::unique("linecon-new-session-name");
+        let folders = folder_choices(&self.config.nodes);
+        let mut outcome = None;
+        // Read first: the modal takes Escape for itself. A list that is open gets it instead.
+        let list_open = egui::Popup::is_any_open(ctx);
+        let cancel_key = !list_open && ctx.input(|i| i.key_pressed(Key::Escape));
+        // Enter on a button means that button, and in an open list means its choice.
+        let in_a_field = ctx
+            .memory(|m| m.focused())
+            .is_some_and(|id| TextEdit::load_state(ctx, id).is_some());
+        let enter = in_a_field && !list_open && ctx.input(|i| i.key_pressed(Key::Enter));
+        egui::Modal::new(egui::Id::unique("linecon-new-session")).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.label(RichText::new("New session").size(16.0));
+            ui.add_space(6.0);
+            target_editor(ui, &mut draft.name, &mut draft.target, name_id, chrome);
+            let saved_in = draft
+                .parent
+                .and_then(|id| folders.iter().find(|(f, _)| *f == id))
+                .map_or("Top level", |(_, path)| path.as_str())
+                .to_string();
+            let folder_label = ui
+                .label(RichText::new("Folder").size(12.0).color(chrome.muted))
+                .id;
+            let combo = egui::ComboBox::from_id_salt("new-session-folder")
+                .selected_text(saved_in)
+                .width(ui.available_width() - 8.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut draft.parent, None, "Top level");
+                    for (id, path) in &folders {
+                        ui.selectable_value(&mut draft.parent, Some(*id), path);
+                    }
+                });
+            combo.response.labelled_by(folder_label);
+            ui.add_space(12.0);
+            let ready = match draft.target.protocol {
+                Protocol::Serial => !draft.target.line.trim().is_empty(),
+                _ => !draft.target.host.trim().is_empty(),
+            };
+            ui.horizontal(|ui| {
+                let save = ui.add_enabled(ready, egui::Button::new("Save").fill(chrome.selected));
+                if save.clicked() || (ready && enter) {
+                    outcome = Some(NewSessionOutcome::Save);
+                }
+                // Enter took the keyboard from the field, and what is missing is the host.
+                if enter && !ready {
+                    ui.memory_mut(|m| m.request_focus(name_id.with("host")));
+                }
+                if ui
+                    .add_enabled(ready, egui::Button::new("Save and Connect"))
+                    .clicked()
+                {
+                    outcome = Some(NewSessionOutcome::SaveAndConnect);
+                }
+                if ui.button("Cancel").clicked() || cancel_key {
+                    outcome = Some(NewSessionOutcome::Cancel);
+                }
+            });
+            if draft.wants_focus {
+                draft.wants_focus = false;
+                ui.memory_mut(|m| m.request_focus(name_id));
+            }
+        });
+        match outcome {
+            None => {}
+            Some(NewSessionOutcome::Cancel) => self.new_session = None,
+            Some(choice) => {
+                let draft = self.new_session.take().unwrap();
+                let name = draft.name.trim();
+                let name = if !name.is_empty() {
+                    name.to_string()
+                } else if draft.target.protocol == Protocol::Serial {
+                    draft.target.line.clone()
+                } else {
+                    draft.target.host.clone()
+                };
+                if let Some(id) = self.config.add_session(draft.parent, &name, draft.target) {
+                    self.reveal_in_tree(id);
+                    self.dirty = true;
+                    self.save_if_needed();
+                    if self.save_error.is_none() {
+                        self.info = Some(format!("Saved {name}."));
+                    }
+                    if matches!(choice, NewSessionOutcome::SaveAndConnect) {
+                        self.open_saved(id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Selects a row, opening the folders around it, and brings it into view.
+    pub(super) fn reveal_in_tree(&mut self, id: Id) {
+        let folders: Vec<Id> = self
+            .config
+            .ancestors(id)
+            .map(|path| path.iter().map(|f| f.id).collect())
+            .unwrap_or_default();
+        for folder in folders {
+            if let Some(Node::Folder(folder)) = self.config.find_mut(folder) {
+                folder.collapsed = false;
+            }
+        }
+        self.selected_node = Some(id);
+        self.scroll_to_node = Some(id);
     }
 
     /// Saved commands on a folder or at the root.

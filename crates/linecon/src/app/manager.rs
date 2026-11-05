@@ -34,6 +34,10 @@ impl App {
             builder,
             |ui, _| {
                 self.session_manager_contents(ui, chrome);
+                if self.new_session.as_ref().is_some_and(|d| d.in_manager) {
+                    let ctx = ui.ctx().clone();
+                    self.new_session_dialog(&ctx, chrome);
+                }
                 if ui.input(|i| i.viewport().close_requested()) {
                     self.manager_open = false;
                 }
@@ -55,10 +59,10 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     if ui.button("New session").clicked() {
-                        self.add_session_near_selection();
+                        self.start_new_session(self.selected_folder(), true);
                     }
                     if ui.button("New folder").clicked() {
-                        self.add_folder_near_selection();
+                        self.add_folder_in_selection();
                     }
                     if ui.button("Global settings").clicked() {
                         self.inspector = Some(InspectTarget::Root);

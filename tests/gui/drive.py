@@ -153,7 +153,7 @@ def step(name):
 STEPS = []
 QUICK_BOX = (215, 142)
 PASSWORD_BOX = (760, 196)
-NAME_FIELD = (1020, 169)
+NAME_FIELD = (1020, 198)
 
 
 @step("first login: quick connect, trust the key, remember the login")

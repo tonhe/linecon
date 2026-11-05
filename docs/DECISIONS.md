@@ -223,3 +223,11 @@ The window's key handling reads the same entries the menus show, so a shortcut c
 macOS the menu takes the keys, and a key it takes never reaches the window, so each runs once. Copy and paste are the
 exception: text fields only respond to the keys themselves, so the menu names those shortcuts in the label and leaves
 the keys alone.
+
+## 2026-11-05: New sessions go in the selected folder, or the top level
+
+A selected session says nothing about where a new one belongs, and following it put sessions inside collapsed folders
+where nobody could find them. Only a selected folder decides, the dialog shows and can change the choice, and the
+result is revealed. There is no special default folder: the top level is that, and clicking empty space returns to it.
+A new session is a dialog with a Save button and nothing exists until then. Editing an existing one still saves as you
+go, shortly after each change, and the panel says so.

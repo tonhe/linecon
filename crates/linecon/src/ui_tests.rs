@@ -145,10 +145,14 @@ fn inspector_shows_where_values_come_from() {
     s.app.inspect(s.core_sw);
     let mut h = harness(s.app);
     h.run_steps(3);
-    assert!(h.query_by_label("from Core switches").is_some());
+    h.get_by_label("Terminal").click();
+    h.run_steps(3);
     assert!(h.query_by_label("from Datacenter").is_some());
     assert!(h.query_all_by_label("default").count() > 1);
     screenshot(&mut h, "inspector");
+    h.get_by_label("SSH").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("from Core switches").is_some());
 }
 
 #[test]
@@ -158,6 +162,8 @@ fn clearing_an_override_returns_to_inheriting() {
     s.app.config.overrides_mut(id).unwrap().theme = Some("Nord".into());
     s.app.inspect(id);
     let mut h = harness(s.app);
+    h.run_steps(3);
+    h.get_by_label("Terminal").click();
     h.run_steps(3);
     assert!(h.query_by_label("set here").is_some());
     h.get_all_by_label("×").nth(1).unwrap().click();
@@ -2687,4 +2693,157 @@ fn changes_save_after_a_pause() {
     std::thread::sleep(std::time::Duration::from_millis(700));
     h.run_steps(2);
     assert!(saved(&place).contains("update_checks"), "never saved");
+}
+
+fn open_new_session(h: &mut Harness<'static, App>) {
+    h.get_by_label("+").click();
+    h.run_steps(3);
+    h.get_by_label("New session").click();
+    h.run_steps(4);
+}
+
+fn session_named(app: &App, name: &str) -> Option<Id> {
+    fn walk(nodes: &[linecon_config::Node], name: &str) -> Option<Id> {
+        nodes.iter().find_map(|node| match node {
+            linecon_config::Node::Session(s) if s.name == name => Some(s.id),
+            linecon_config::Node::Folder(f) => walk(&f.children, name),
+            _ => None,
+        })
+    }
+    walk(&app.config.nodes, name)
+}
+
+/// The keyboard starts in the name, and Tab goes name, protocol, host, without leaving.
+#[test]
+fn a_new_session_starts_in_its_name_and_tabs_stay_in_the_dialog() {
+    let mut s = sample();
+    s.app.add_demo_tab("core-sw1", Some(s.core_sw), b"");
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    open_new_session(&mut h);
+    h.event(egui::Event::Text("lab-router".into()));
+    h.run_steps(2);
+    assert!(h.query_all_by_value("lab-router").next().is_some());
+    let host_next = |h: &mut Harness<'static, App>| {
+        h.key_press(egui::Key::Tab);
+        h.run_steps(2);
+    };
+    host_next(&mut h); // protocol
+    assert!(has_keyboard(&h, "SSH"));
+    h.key_press(egui::Key::ArrowRight);
+    h.run_steps(3);
+    assert!(has_keyboard(&h, "Telnet"), "arrows change the protocol");
+    h.key_press(egui::Key::ArrowLeft);
+    h.run_steps(3);
+    assert!(has_keyboard(&h, "SSH"));
+    host_next(&mut h); // host
+    h.event(egui::Event::Text("10.0.0.9".into()));
+    h.run_steps(2);
+    assert!(h.query_all_by_value("10.0.0.9").next().is_some());
+    for _ in 0..12 {
+        host_next(&mut h);
+        assert!(!has_keyboard(&h, "core-sw1"), "Tab left the dialog");
+    }
+}
+
+/// Nothing exists until it is saved, and a selected session does not decide where it goes.
+#[test]
+fn a_new_session_saves_at_the_top_level_and_cancel_leaves_nothing() {
+    let mut s = sample();
+    s.app.selected_node_for_test(s.core_sw);
+    let before = s.app.config.nodes.len();
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    open_new_session(&mut h);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert_eq!(h.state().config.nodes.len(), before);
+    assert!(h.query_by_label("Save").is_none());
+
+    open_new_session(&mut h);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(h.query_by_label("Save").is_some(), "saved with no host");
+
+    // Enter moved to the host, the part that was missing, and the name defaults to it.
+    h.event(egui::Event::Text("10.0.0.9".into()));
+    h.run_steps(2);
+    h.get_by_label("Save").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Save").is_none());
+    assert_eq!(h.state().config.nodes.len(), before + 1);
+    let id = session_named(h.state(), "10.0.0.9").expect("saved");
+    assert!(h.state().config.nodes.iter().any(|node| node.id() == id));
+    assert!(h.query_all_by_label("10.0.0.9").next().is_some());
+    h.get_by_label_contains("Saved 10.0.0.9");
+}
+
+/// A selected folder is where it goes, and the folder opens so the result can be seen.
+#[test]
+fn a_session_made_in_a_collapsed_folder_is_shown() {
+    let mut s = sample();
+    let folder = s.app.config.add_folder(None, "Lab").unwrap();
+    if let Some(linecon_config::Node::Folder(f)) = s.app.config.find_mut(folder) {
+        f.collapsed = true;
+    }
+    s.app.selected_node_for_test(folder);
+    s.app.start_new_session_in_selection_for_test();
+    let mut h = harness(s.app);
+    h.run_steps(4);
+    h.get_by_label_contains("Lab");
+    h.event(egui::Event::Text("inside".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Tab);
+    h.run_steps(2);
+    h.key_press(egui::Key::Tab);
+    h.run_steps(2);
+    h.event(egui::Event::Text("10.0.0.9".into()));
+    h.run_steps(2);
+    screenshot(&mut h, "new-session");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(4);
+    screenshot(&mut h, "new-session-saved");
+    h.get_by_label("inside");
+    let id = session_named(h.state(), "inside").unwrap();
+    let path = h.state().config.ancestors(id).unwrap();
+    assert_eq!(path.last().unwrap().id, folder);
+}
+
+/// Each part of the settings is reachable, and the panel opens on the short one.
+#[test]
+fn settings_are_split_into_sections() {
+    let mut s = sample();
+    let id = s.core_sw;
+    s.app.inspect(id);
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    h.get_by_label("Protocol");
+    h.get_by_label("Changes are saved");
+    assert!(h.query_by_label("Theme").is_none());
+    h.get_by_label("Terminal").click();
+    h.run_steps(3);
+    h.get_by_label("Theme");
+    h.get_by_label("Logging").click();
+    h.run_steps(3);
+    h.get_by_label("Log folder");
+    h.get_by_label("SSH").click();
+    h.run_steps(3);
+    h.get_by_label("Jump host");
+    assert!(h.query_by_label("Serial").is_none(), "this one is SSH");
+    screenshot(&mut h, "settings-ssh");
+}
+
+#[test]
+fn only_a_selected_folder_decides_where_new_things_go() {
+    let mut s = sample();
+    let folder = s.app.config.add_folder(None, "Lab").unwrap();
+    assert_eq!(s.app.selected_folder_for_test(), None);
+    s.app.selected_node_for_test(s.core_sw);
+    assert_eq!(
+        s.app.selected_folder_for_test(),
+        None,
+        "a session is no folder"
+    );
+    s.app.selected_node_for_test(folder);
+    assert_eq!(s.app.selected_folder_for_test(), Some(folder));
 }

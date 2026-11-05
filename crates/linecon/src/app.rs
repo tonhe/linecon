@@ -263,6 +263,10 @@ pub struct App {
     manager_search: String,
     /// The window just opened, and its search field should get the keyboard.
     manager_wants_focus: bool,
+    new_session: Option<inspector::NewSessionDraft>,
+    settings_section: inspector::SettingsSection,
+    settings_wants_focus: bool,
+    scroll_to_node: Option<Id>,
     /// Where it opened, fixed so it does not follow the main window around.
     manager_position: Option<egui::Pos2>,
     dirty_since: Option<Instant>,
@@ -454,6 +458,10 @@ impl App {
             manager_open: false,
             manager_search: String::new(),
             manager_wants_focus: false,
+            new_session: None,
+            settings_section: inspector::SettingsSection::General,
+            settings_wants_focus: false,
+            scroll_to_node: None,
             manager_position: None,
             dirty_since: None,
             renderer_info: String::new(),
@@ -839,6 +847,8 @@ impl App {
             Command::SessionSettings => {
                 let scope = self.snippet_scope();
                 self.inspector = Some(scope.map_or(InspectTarget::Root, InspectTarget::Node));
+                self.settings_section = inspector::SettingsSection::General;
+                self.settings_wants_focus = true;
             }
             Command::ExportSnippets => self.export_snippets(),
             Command::ExportSessions { with_logins } => self.export_sessions(None, with_logins),
@@ -926,6 +936,9 @@ impl App {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.new_session.is_some() {
+            return;
+        }
         let pressed = |key: Key, mods: Modifiers| ctx.input_mut(|i| i.consume_key(mods, key));
         let entries = menus::menu_columns(self.update_key.is_some());
         for entry in entries.into_iter().flat_map(|(_, e)| e).flatten() {
@@ -1117,6 +1130,13 @@ impl App {
         self.agent_proposal_overlay(&ctx, &chrome);
         self.about_overlay(&ctx, &chrome);
         self.session_manager(&ctx, &chrome);
+        if self
+            .new_session
+            .as_ref()
+            .is_some_and(|d| !d.in_manager || !self.manager_open)
+        {
+            self.new_session_dialog(&ctx, &chrome);
+        }
         self.poll_native_menu(&ctx);
         self.poll_updates();
         self.update_overlay(&ctx, &chrome);
