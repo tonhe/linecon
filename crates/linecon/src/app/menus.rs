@@ -276,6 +276,20 @@ impl App {
                         if !self.renderer_info.is_empty() {
                             ui.label(RichText::new(&self.renderer_info).color(chrome.muted));
                         }
+                        ui.label(
+                            RichText::new(format!(
+                                "Drawing {} frames a second",
+                                self.frame_stats.per_second
+                            ))
+                            .color(chrome.muted),
+                        );
+                        if !self.frame_stats.causes.is_empty() {
+                            ui.label(
+                                RichText::new(&self.frame_stats.causes)
+                                    .size(11.0)
+                                    .color(chrome.muted),
+                            );
+                        }
                         ui.add_space(6.0);
                         ui.label(
                             RichText::new(

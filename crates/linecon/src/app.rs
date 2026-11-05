@@ -2,6 +2,7 @@
 //! appear when asked for. By default it is a terminal and a sidebar.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -272,6 +273,7 @@ pub struct App {
     dirty_since: Option<Instant>,
     /// What is drawing the window, for telling a slow software renderer from a slow program.
     renderer_info: String,
+    frame_stats: FrameStats,
     inspector: Option<InspectTarget>,
     renaming: Option<(Id, String)>,
     paste_confirm: Option<(PaneId, String)>,
@@ -289,6 +291,57 @@ pub struct App {
 }
 
 const AUTHOR: &str = "Tony Mattke";
+
+/// How often the window is drawing and why, since an idle window should not be drawing at all.
+/// Shown in About, and written to the file named by LINECON_FRAME_STATS for tests to read.
+struct FrameStats {
+    window_start: Instant,
+    frames: u32,
+    per_second: u32,
+    causes: String,
+    file: Option<PathBuf>,
+}
+
+impl FrameStats {
+    fn from_env() -> Self {
+        Self {
+            window_start: Instant::now(),
+            frames: 0,
+            per_second: 0,
+            causes: String::new(),
+            file: std::env::var_os("LINECON_FRAME_STATS").map(PathBuf::from),
+        }
+    }
+
+    fn count(&mut self, ctx: &egui::Context) {
+        self.frames += 1;
+        let elapsed = self.window_start.elapsed();
+        if elapsed < Duration::from_secs(1) {
+            return;
+        }
+        self.per_second = (self.frames as f32 / elapsed.as_secs_f32()).round() as u32;
+        self.frames = 0;
+        self.window_start = Instant::now();
+        let mut causes: Vec<String> = ctx
+            .repaint_causes()
+            .iter()
+            .map(|cause| cause.to_string())
+            .collect();
+        causes.sort();
+        causes.dedup();
+        self.causes = causes.join(", ");
+        if let Some(file) = &self.file {
+            use std::io::Write;
+            if let Ok(mut out) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file)
+            {
+                let _ = writeln!(out, "{} frames/s: {}", self.per_second, self.causes);
+            }
+        }
+    }
+}
 const SAVE_PAUSE: Duration = Duration::from_millis(600);
 
 /// A shortcut as this platform writes it.
@@ -468,6 +521,7 @@ impl App {
             manager_position: None,
             dirty_since: None,
             renderer_info: String::new(),
+            frame_stats: FrameStats::from_env(),
             inspector: None,
             renaming: None,
             paste_confirm: None,
@@ -982,6 +1036,7 @@ impl App {
 
     pub fn show(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        self.frame_stats.count(&ctx);
         if self.repaint.is_none() {
             let repaint_ctx = ctx.clone();
             self.repaint = Some(Arc::new(move || repaint_ctx.request_repaint()));
