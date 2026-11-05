@@ -228,7 +228,13 @@ impl App {
                 let started = update::program_path().and_then(|exe| update::restart(&exe));
                 match started {
                     Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-                    Err(e) => self.error = Some(format!("could not restart: {e}")),
+                    // The update is in place either way: only the automatic start failed.
+                    Err(e) => {
+                        self.error = Some(format!(
+                            "Updated, but could not start the new version ({e}). Close linecon0 \
+                             and open it again to finish."
+                        ))
+                    }
                 }
             }
             None => {}

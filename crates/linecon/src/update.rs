@@ -480,7 +480,22 @@ pub fn restart(exe: &Path) -> io::Result<()> {
             Command::new("open").arg("-n").arg(bundle).spawn()?;
         }
         _ => {
-            Command::new(exe).spawn()?;
+            let mut command = Command::new(exe);
+            // A window program's own standard handles can be ones Windows refuses to pass on,
+            // which fails the start with "the request is not supported". The new copy needs none.
+            command
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                // Not tied to this process or its console, which is about to go.
+                const DETACHED_PROCESS: u32 = 0x0000_0008;
+                const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+                command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+            }
+            command.spawn()?;
         }
     }
     Ok(())
@@ -488,6 +503,15 @@ pub fn restart(exe: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The real program can only be started from a window, so this starts the shell instead,
+    /// which exits at once with nothing to read.
+    #[cfg(windows)]
+    #[test]
+    fn restart_starts_a_program_with_nothing_inherited() {
+        let shell = std::path::PathBuf::from(std::env::var("ComSpec").unwrap());
+        restart(&shell).unwrap();
+    }
+
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
     use std::io::Write;
