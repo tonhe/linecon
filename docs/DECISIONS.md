@@ -23,7 +23,7 @@ event handle (Windows).
 
 ## 2026-11-03: PuTTY is built by its CMake and linked as its plink target is
 
-`build.rs` runs CMake on the unmodified submodule, building the `plink` target
+`build.rs` runs CMake on the unmodified vendored copy, building the `plink` target
 because it depends on every library the shim needs and proves PuTTY's own link
 line works at the pinned commit.
 
@@ -240,3 +240,12 @@ millisecond, so no tuning of the program could help. Those machines now use a sm
 surface, which reached 30 frames a second on the same machine at a few percent of one core. The ready-made backend for
 this tracks an older egui, and what egui draws is simple enough to own. On this path the session manager is a panel in
 the main window, and there is no screen reader support yet.
+
+## 2026-11-05: PuTTY is vendored, not a submodule
+
+A release failed because PuTTY's git server dropped the connection while CI fetched the submodule. PuTTY now sits in
+`vendor/putty` as upstream published it, with the commit in `vendor/PUTTY_COMMIT`, so building needs nothing but this
+repository. It is still never patched: `packaging/putty.sh check` compares git's hash of the directory with upstream's
+tree for that commit, in a workflow of its own so that a release never waits for that server, and
+`packaging/putty.sh update <commit>` is the only way it changes. A separate mirror repository was considered and not
+wanted.

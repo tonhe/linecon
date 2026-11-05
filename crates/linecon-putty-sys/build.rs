@@ -1,4 +1,4 @@
-//! Builds the pinned PuTTY submodule with its own CMake build, then compiles
+//! Builds the vendored, unmodified PuTTY with its own CMake build, then compiles
 //! the shim against the same configuration and links everything statically.
 use std::env;
 use std::path::PathBuf;
@@ -19,8 +19,8 @@ const PUTTY_LIBS: &[&str] = &[
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     // dunce avoids Windows extended-length paths, which MSBuild cannot open.
-    let putty = dunce::canonicalize(manifest.join("../../vendor/putty"))
-        .expect("vendor/putty is missing; run: git submodule update --init --recursive");
+    let putty =
+        dunce::canonicalize(manifest.join("../../vendor/putty")).expect("vendor/putty is missing");
     // Release builds name their tag. CI sets this only when building one.
     println!("cargo:rerun-if-env-changed=LINECON_RELEASE");
     let version = env::var("LINECON_RELEASE")
@@ -34,18 +34,13 @@ fn main() {
         "unusable version: {version}"
     );
     println!("cargo:rustc-env=LINECON_VERSION={version}");
-    let commit = std::process::Command::new("git")
-        .args([
-            "-C",
-            putty.to_str().unwrap(),
-            "rev-parse",
-            "--short=8",
-            "HEAD",
-        ])
-        .output()
+    // Which upstream commit vendor/putty holds, recorded beside it by packaging/putty.sh.
+    let recorded = manifest.join("../../vendor/PUTTY_COMMIT");
+    println!("cargo:rerun-if-changed={}", recorded.display());
+    let commit = std::fs::read_to_string(&recorded)
         .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .map(|c| c.trim().chars().take(8).collect::<String>())
+        .filter(|c| c.len() == 8)
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=LINECON_PUTTY_COMMIT={commit}");
 

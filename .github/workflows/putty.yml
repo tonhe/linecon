@@ -1,0 +1,23 @@
+name: PuTTY is unmodified
+
+# Proves vendor/putty is exactly upstream's commit. It talks to PuTTY's server, so it runs on
+# its own: a release never waits for that server.
+on:
+  push:
+    branches: [main]
+    paths: ["vendor/**", "packaging/putty.sh"]
+  pull_request:
+    paths: ["vendor/**", "packaging/putty.sh"]
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: packaging/putty.sh check

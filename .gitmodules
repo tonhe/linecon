@@ -1,3 +1,0 @@
-[submodule "vendor/putty"]
-	path = vendor/putty
-	url = https://git.tartarus.org/simon/putty.git
