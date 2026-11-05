@@ -453,12 +453,9 @@ fn a_changed_host_key_is_never_accepted_silently() {
     while Instant::now() < deadline {
         match session.recv_timeout(Duration::from_millis(100)) {
             Ok(Event::HostKey(prompt)) => {
-                // The window's warning card depends on this wording.
-                assert!(
-                    prompt.description.contains("does not match"),
-                    "{}",
-                    prompt.description
-                );
+                // Trusting new hosts automatically depends on telling these apart.
+                assert!(prompt.changed, "{}", prompt.description);
+                assert!(!prompt.is_new_host());
                 session.answer_hostkey(HostKeyVerdict::Reject);
             }
             Ok(Event::Prompt(_)) | Ok(Event::SendOk) => panic!("got past a changed key"),

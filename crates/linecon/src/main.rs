@@ -78,9 +78,10 @@ fn run_window(smoke: Option<std::path::PathBuf>) -> i32 {
         let result = eframe::run_native(
             "linecon",
             options,
-            Box::new(move |_cc| {
+            Box::new(move |cc| {
                 update::clean_up_after_update();
-                native_menu::install();
+                let wake = cc.egui_ctx.clone();
+                native_menu::install(move || wake.request_repaint());
                 let app = app::App::new(location);
                 Ok(match smoke {
                     Some(file) => Box::new(SmokeTest {

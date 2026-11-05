@@ -277,6 +277,18 @@ def menus():
     gone("MIT licensed")
 
 
+@step("the session manager opens ready to search")
+def manager_search():
+    key("ctrl+shift+o")
+    wait("New folder")
+    typed("findme")
+    wait("findme")
+    shot("manager-search")
+    key(*["BackSpace"] * 6)
+    click("Close", 0)
+    gone("New folder")
+
+
 @step("command palette opens, filters, runs a theme change")
 def palette():
     key("ctrl+shift+p")

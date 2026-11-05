@@ -48,17 +48,9 @@ pub(super) fn files_body(ui: &mut Ui, sftp: &mut SftpPane, chrome: &Chrome) {
                     .size(11.0)
                     .color(chrome.muted),
             );
-            ui.horizontal(|ui| {
-                if ui.button("Trust and remember").clicked() {
-                    sftp.answer_host_key(HostKeyVerdict::AcceptAndStore);
-                }
-                if ui.button("Connect once").clicked() {
-                    sftp.answer_host_key(HostKeyVerdict::AcceptOnce);
-                }
-                if ui.button("Cancel").clicked() {
-                    sftp.answer_host_key(HostKeyVerdict::Reject);
-                }
-            });
+            if let Some(verdict) = host_key_buttons(ui, key, None) {
+                sftp.answer_host_key(verdict);
+            }
             return;
         }
         Some(Question::Prompt(prompt)) => {
@@ -327,6 +319,7 @@ impl App {
             spec.settings.clone(),
             spec.password.clone(),
             spec.accept_weak,
+            spec.trust_new_host_keys,
             repaint,
         ));
     }

@@ -10,17 +10,72 @@ pub(super) const HELP: &str = "https://github.com/tonhe/linecon#readme";
 #[derive(Clone)]
 pub(super) struct MenuEntry {
     pub(super) label: &'static str,
-    pub(super) shortcut: Option<&'static str>,
+    pub(super) shortcut: Option<Chord>,
     pub(super) command: Command,
+}
+
+/// A key combination. The menus are the only list of them: the window's key handling reads
+/// the same entries, so nothing can have a shortcut that its menu item does not show.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Chord {
+    /// Cmd on macOS, Ctrl+Shift elsewhere, since plain Ctrl belongs to the device.
+    Command(&'static str),
+    Ctrl(&'static str),
+    Alt(&'static str),
+}
+
+impl Chord {
+    /// How the window's menus and the palette write it.
+    pub(super) fn text(self) -> String {
+        match self {
+            Chord::Command(key) => shortcut(key),
+            Chord::Ctrl(key) if cfg!(target_os = "macos") => format!("⌃{key}"),
+            Chord::Ctrl(key) => format!("Ctrl+{key}"),
+            Chord::Alt(key) if cfg!(target_os = "macos") => format!("⌥{}", arrow_name(key)),
+            Chord::Alt(key) => format!("Alt+{}", arrow_name(key)),
+        }
+    }
+
+    pub(super) fn key(self) -> Option<Key> {
+        match self {
+            Chord::Command(key) | Chord::Ctrl(key) | Chord::Alt(key) => Key::from_name(key),
+        }
+    }
+
+    pub(super) fn modifiers(self) -> Modifiers {
+        match self {
+            Chord::Command(_) if cfg!(target_os = "macos") => Modifiers::MAC_CMD,
+            Chord::Command(_) => Modifiers::CTRL | Modifiers::SHIFT,
+            Chord::Ctrl(_) => Modifiers::CTRL,
+            Chord::Alt(_) => Modifiers::ALT,
+        }
+    }
+
+    /// The same keys, spelled for the native menu.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub(super) fn accelerator(self) -> String {
+        match self {
+            Chord::Command(key) => format!("Cmd+{key}"),
+            Chord::Ctrl(key) => format!("Ctrl+{key}"),
+            Chord::Alt(key) => format!("Alt+{key}"),
+        }
+    }
+}
+
+fn arrow_name(key: &str) -> &str {
+    key.strip_prefix("Arrow").unwrap_or(key)
+}
+
+/// Copy and paste have to reach text fields, and those only hear the keys themselves. A menu
+/// taking the keys would swallow them, so these two name their shortcut without claiming it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(super) fn window_handles_keys(command: &Command) -> bool {
+    matches!(command, Command::Copy | Command::Paste)
 }
 
 pub(super) type MenuColumn = (&'static str, Vec<Option<MenuEntry>>);
 
-fn item(
-    label: &'static str,
-    shortcut: Option<&'static str>,
-    command: Command,
-) -> Option<MenuEntry> {
+fn item(label: &'static str, shortcut: Option<Chord>, command: Command) -> Option<MenuEntry> {
     Some(MenuEntry {
         label,
         shortcut,
@@ -35,10 +90,18 @@ pub(super) fn menu_columns(updates: bool) -> Vec<MenuColumn> {
         app.push(item("Check for Updates…", None, Command::CheckForUpdates));
     }
     app.push(None);
-    app.push(item("Preferences…", Some(","), Command::GlobalSettings));
+    app.push(item(
+        "Preferences…",
+        Some(Chord::Command(",")),
+        Command::GlobalSettings,
+    ));
     let mut file = vec![
-        item("New Tab", Some("T"), Command::NewTab),
-        item("Find or Connect…", Some("K"), Command::FindConnection),
+        item("New Tab", Some(Chord::Command("T")), Command::NewTab),
+        item(
+            "Find or Connect…",
+            Some(Chord::Command("K")),
+            Command::FindConnection,
+        ),
         None,
         item(
             "Export Sessions…",
@@ -47,7 +110,7 @@ pub(super) fn menu_columns(updates: bool) -> Vec<MenuColumn> {
         ),
         item("Import SSH Config", None, Command::ImportSshConfig),
         None,
-        item("Close Pane", Some("W"), Command::ClosePane),
+        item("Close Pane", Some(Chord::Command("W")), Command::ClosePane),
     ];
     if !cfg!(target_os = "macos") {
         app.append(&mut file);
@@ -62,32 +125,77 @@ pub(super) fn menu_columns(updates: bool) -> Vec<MenuColumn> {
     }
     columns.push(("File", file));
     columns.push((
+        "Edit",
+        vec![
+            item("Copy", Some(Chord::Command("C")), Command::Copy),
+            item("Paste", Some(Chord::Command("V")), Command::Paste),
+        ],
+    ));
+    columns.push((
         "View",
         vec![
-            item("Session Manager", Some("O"), Command::SessionManager),
-            item("Toggle Sidebar", Some("B"), Command::ToggleSidebar),
+            item(
+                "Session Manager",
+                Some(Chord::Command("O")),
+                Command::SessionManager,
+            ),
+            item(
+                "Toggle Sidebar",
+                Some(Chord::Command("B")),
+                Command::ToggleSidebar,
+            ),
             item(
                 "Switch Sidebar / Session Manager",
                 None,
                 Command::ToggleSessionManagerPreference,
             ),
-            item("Command Palette…", Some("P"), Command::OpenPalette),
+            item(
+                "Command Palette…",
+                Some(Chord::Command("P")),
+                Command::OpenPalette,
+            ),
             None,
-            item("Search Scrollback", Some("F"), Command::Search),
-            item("File Browser", Some("S"), Command::ToggleFiles),
-            item("Session Settings", Some("I"), Command::SessionSettings),
+            item(
+                "Search Scrollback",
+                Some(Chord::Command("F")),
+                Command::Search,
+            ),
+            item(
+                "File Browser",
+                Some(Chord::Command("S")),
+                Command::ToggleFiles,
+            ),
+            item(
+                "Session Settings",
+                Some(Chord::Command("I")),
+                Command::SessionSettings,
+            ),
         ],
     ));
     columns.push((
         "Session",
         vec![
-            item("Reconnect", Some("R"), Command::Reconnect),
+            item("Reconnect", Some(Chord::Command("R")), Command::Reconnect),
             item("Send Break", None, Command::SendBreak),
             None,
-            item("Split Right", Some("D"), Command::SplitRight),
-            item("Split Down", Some("E"), Command::SplitDown),
+            item(
+                "Split Right",
+                Some(Chord::Command("D")),
+                Command::SplitRight,
+            ),
+            item("Split Down", Some(Chord::Command("E")), Command::SplitDown),
             None,
-            item("Next Tab", None, Command::NextTab),
+            item("Next Tab", Some(Chord::Ctrl("Tab")), Command::NextTab),
+            item(
+                "Next Pane",
+                Some(Chord::Alt("ArrowRight")),
+                Command::NextPane,
+            ),
+            item(
+                "Previous Pane",
+                Some(Chord::Alt("ArrowLeft")),
+                Command::PreviousPane,
+            ),
         ],
     ));
     columns.push((
@@ -116,8 +224,8 @@ impl App {
                             }
                             Some(entry) => {
                                 let mut button = egui::Button::new(entry.label);
-                                if let Some(key) = entry.shortcut {
-                                    button = button.shortcut_text(shortcut(key));
+                                if let Some(chord) = entry.shortcut {
+                                    button = button.shortcut_text(chord.text());
                                 }
                                 if ui.add(button).clicked() {
                                     chosen = Some(entry.command.clone());
@@ -182,5 +290,50 @@ impl App {
         if close {
             self.about_open = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chords() -> Vec<(&'static str, Chord)> {
+        menu_columns(true)
+            .into_iter()
+            .flat_map(|(_, entries)| entries)
+            .flatten()
+            .filter_map(|e| e.shortcut.map(|chord| (e.label, chord)))
+            .collect()
+    }
+
+    #[test]
+    fn every_shortcut_is_a_real_key_used_once() {
+        let chords = chords();
+        for (index, (label, chord)) in chords.iter().enumerate() {
+            assert!(chord.key().is_some(), "{label}");
+            let same = |(_, other): &(&str, Chord)| other == chord;
+            assert!(!chords[..index].iter().any(same), "{label}");
+        }
+    }
+
+    /// Everything the window has always answered to is still there.
+    #[test]
+    fn the_menus_name_every_shortcut() {
+        let chords: Vec<Chord> = chords().into_iter().map(|(_, chord)| chord).collect();
+        for key in [
+            ",", "B", "C", "D", "E", "F", "I", "K", "O", "P", "R", "S", "T", "V", "W",
+        ] {
+            assert!(chords.contains(&Chord::Command(key)), "{key}");
+        }
+        assert!(chords.contains(&Chord::Ctrl("Tab")));
+        assert!(chords.contains(&Chord::Alt("ArrowRight")));
+        assert!(chords.contains(&Chord::Alt("ArrowLeft")));
+    }
+
+    #[test]
+    fn native_menus_leave_copy_and_paste_to_the_window() {
+        assert!(window_handles_keys(&Command::Copy));
+        assert!(window_handles_keys(&Command::Paste));
+        assert!(!window_handles_keys(&Command::SessionSettings));
     }
 }

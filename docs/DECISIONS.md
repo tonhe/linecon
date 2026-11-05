@@ -209,3 +209,17 @@ format is not read, so those sessions ask.
 Most locks unwrap, and a panic inside a C callback aborts. Carrying on with state that may be half-changed is worse for a
 tool connected to live devices. A pane's pump thread marks its pane closed as it goes, so a panic there cannot leave a
 pane looking connected.
+
+## 2026-11-05: New host keys can be trusted automatically, changed ones never
+
+Trust and remember is the default answer for a host seen for the first time, and a global setting, off by default, takes
+that answer without asking and prints the fingerprint in the terminal. Anything that contradicts what is remembered, a
+different key or a new key type on a known host, still asks, and there Enter means Cancel. Telling these apart asks the
+key store rather than reading PuTTY's wording, since a change of wording must not turn a warning into a silent accept.
+
+## 2026-11-05: The menus are the list of shortcuts
+
+The window's key handling reads the same entries the menus show, so a shortcut cannot exist without its menu item. On
+macOS the menu takes the keys, and a key it takes never reaches the window, so each runs once. Copy and paste are the
+exception: text fields only respond to the keys themselves, so the menu names those shortcuts in the label and leaves
+the keys alone.

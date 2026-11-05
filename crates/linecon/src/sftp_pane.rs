@@ -124,6 +124,7 @@ struct WindowAuth {
     tried_password: bool,
     through_proxy: bool,
     accept_weak: bool,
+    trust_new_host_keys: bool,
 }
 
 impl WindowAuth {
@@ -138,6 +139,9 @@ impl WindowAuth {
 
 impl Auth for WindowAuth {
     fn host_key(&mut self, prompt: &HostKeyPrompt) -> HostKeyVerdict {
+        if self.trust_new_host_keys && prompt.is_new_host() {
+            return HostKeyVerdict::AcceptAndStore;
+        }
         match self.ask(Question::HostKey(prompt.clone())) {
             Some(Answer::HostKey(verdict)) => verdict,
             _ => HostKeyVerdict::Reject,
@@ -171,6 +175,7 @@ impl SftpPane {
         settings: Settings,
         password: Option<PasswordLookup>,
         accept_weak: bool,
+        trust_new_host_keys: bool,
         repaint: Repaint,
     ) -> Self {
         let state = Arc::new(Mutex::new(State {
@@ -193,6 +198,7 @@ impl SftpPane {
                     tried_password: false,
                     through_proxy,
                     accept_weak,
+                    trust_new_host_keys,
                 };
                 worker(&settings, &mut auth, command_rx, state, cancel, repaint);
             });

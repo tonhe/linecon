@@ -154,6 +154,10 @@ pub(crate) enum Command {
     SplitDown,
     ClosePane,
     NextTab,
+    NextPane,
+    PreviousPane,
+    Copy,
+    Paste,
     ToggleSidebar,
     ToggleBroadcast,
     BroadcastAll,
@@ -257,6 +261,8 @@ pub struct App {
     about_open: bool,
     manager_open: bool,
     manager_search: String,
+    /// The window just opened, and its search field should get the keyboard.
+    manager_wants_focus: bool,
     inspector: Option<InspectTarget>,
     renaming: Option<(Id, String)>,
     paste_confirm: Option<(PaneId, String)>,
@@ -287,9 +293,9 @@ fn terminal_id(pane: PaneId) -> egui::Id {
 }
 
 /// Parses `[proto://][user@]host[:port]` and bare serial devices.
-/// A native menu's title, and each item's label and index into its list of commands.
+/// A native menu's title, and each item's label, keys and index into its list of commands.
 #[cfg(target_os = "macos")]
-pub type NativeMenu = (&'static str, Vec<Option<(String, usize)>>);
+pub type NativeMenu = (&'static str, Vec<Option<(String, Option<String>, usize)>>);
 
 /// The menus, for the native menu bar to show.
 #[cfg(target_os = "macos")]
@@ -303,8 +309,21 @@ pub fn native_menu_items(updates: bool) -> Vec<NativeMenu> {
                 .into_iter()
                 .map(|entry| {
                     entry.map(|entry| {
+                        let shown = entry
+                            .shortcut
+                            .filter(|_| !menus::window_handles_keys(&entry.command));
+                        let label = match entry.shortcut {
+                            Some(chord) if shown.is_none() => {
+                                format!("{} ({})", entry.label, chord.text())
+                            }
+                            _ => entry.label.to_string(),
+                        };
                         chosen.push(entry.command);
-                        (entry.label.to_string(), chosen.len() - 1)
+                        (
+                            label,
+                            shown.map(|chord| chord.accelerator()),
+                            chosen.len() - 1,
+                        )
                     })
                 })
                 .collect();
@@ -426,6 +445,7 @@ impl App {
             about_open: false,
             manager_open: false,
             manager_search: String::new(),
+            manager_wants_focus: false,
             inspector: None,
             renaming: None,
             paste_confirm: None,
@@ -544,6 +564,7 @@ impl App {
             copy_on_select: r.copy_on_select.value,
             auto_reconnect: r.auto_reconnect.value,
             accept_weak: r.legacy_algorithms.value,
+            trust_new_host_keys: self.config.trust_new_host_keys,
             password: r
                 .identity(&self.config)
                 .filter(|i| i.has_password)
@@ -742,11 +763,40 @@ impl App {
             Command::QuickConnect(text) => {
                 self.quick_connect_to(&text);
             }
-            Command::FindConnection => self.open_connection_finder(),
-            Command::NewTab => self.open_new_tab_picker(),
+            // Each of these three closes what it opened, from the menu or the keyboard.
+            Command::FindConnection => {
+                if self.palette.is_some() && self.palette_connections_only {
+                    self.palette = None;
+                } else {
+                    self.open_connection_finder();
+                }
+            }
+            Command::NewTab => {
+                if self.picking_new_tab {
+                    self.palette = None;
+                    self.picking_new_tab = false;
+                } else {
+                    self.open_new_tab_picker();
+                }
+            }
             Command::OpenPalette => {
+                self.palette = if self.palette.is_some() && !self.palette_connections_only {
+                    None
+                } else {
+                    Some((String::new(), 0))
+                };
                 self.palette_connections_only = false;
-                self.palette = Some((String::new(), 0));
+            }
+            Command::NextPane => self.step_pane(true),
+            Command::PreviousPane => self.step_pane(false),
+            Command::Copy => {
+                if let Some(entry) = focused.and_then(|id| self.panes.get(&id)) {
+                    terminal_view::copy_selection(ctx, &entry.pane);
+                }
+            }
+            Command::Paste => {
+                ctx.data_mut(|d| d.insert_temp(egui::Id::unique("linecon-paste-requested"), true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
             }
             Command::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
             Command::About => self.about_open = true,
@@ -849,91 +899,35 @@ impl App {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        let (shift_cmd, plain_ctrl_tab) = (
-            if cfg!(target_os = "macos") {
-                Modifiers::MAC_CMD
-            } else {
-                Modifiers::CTRL | Modifiers::SHIFT
-            },
-            Modifiers::CTRL,
-        );
         let pressed = |key: Key, mods: Modifiers| ctx.input_mut(|i| i.consume_key(mods, key));
-        let table = [
-            (Key::P, Command::GlobalSettings),
-            (Key::D, Command::SplitRight),
-            (Key::E, Command::SplitDown),
-            (Key::W, Command::ClosePane),
-            (Key::B, Command::ToggleSidebar),
-            (Key::F, Command::Search),
-            (Key::R, Command::Reconnect),
-            (Key::S, Command::ToggleFiles),
-            (Key::I, Command::SessionSettings),
-        ];
-        for (key, command) in table {
-            if pressed(key, shift_cmd) {
-                if key == Key::P {
-                    self.palette = if self.palette.is_some() && !self.palette_connections_only {
-                        None
-                    } else {
-                        Some((String::new(), 0))
-                    };
-                    self.palette_connections_only = false;
-                } else {
-                    self.run_command(ctx, command);
-                }
+        let entries = menus::menu_columns(self.update_key.is_some());
+        for entry in entries.into_iter().flat_map(|(_, e)| e).flatten() {
+            let Some(chord) = entry.shortcut else {
+                continue;
+            };
+            if chord
+                .key()
+                .is_some_and(|key| pressed(key, chord.modifiers()))
+            {
+                self.run_command(ctx, entry.command);
             }
         }
-        if pressed(Key::O, shift_cmd) {
-            self.run_command(ctx, Command::SessionManager);
+        // The menu names one key for each direction.
+        if pressed(Key::ArrowDown, Modifiers::ALT) {
+            self.run_command(ctx, Command::NextPane);
         }
-        if pressed(Key::T, shift_cmd) {
-            if self.picking_new_tab {
-                self.palette = None;
-                self.picking_new_tab = false;
-            } else {
-                self.open_new_tab_picker();
-            }
+        if pressed(Key::ArrowUp, Modifiers::ALT) {
+            self.run_command(ctx, Command::PreviousPane);
         }
-        if pressed(Key::K, shift_cmd) {
-            if self.palette.is_some() && self.palette_connections_only {
-                self.palette = None;
-            } else {
-                self.open_connection_finder();
-            }
-        }
-        if pressed(Key::Comma, shift_cmd) {
-            self.inspector = Some(InspectTarget::Root);
-        }
-        if pressed(Key::Tab, plain_ctrl_tab) {
-            self.run_command(ctx, Command::NextTab);
-        }
-        if pressed(Key::C, shift_cmd) {
-            if let Some(entry) = self.focused_pane().and_then(|id| self.panes.get(&id)) {
-                terminal_view::copy_selection(ctx, &entry.pane);
-            }
-        }
-        if pressed(Key::V, shift_cmd) {
-            ctx.data_mut(|d| d.insert_temp(egui::Id::unique("linecon-paste-requested"), true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
-        }
-        // Moving between panes.
-        let alt = Modifiers::ALT;
-        let moves = [
-            Key::ArrowRight,
-            Key::ArrowDown,
-            Key::ArrowLeft,
-            Key::ArrowUp,
-        ];
-        for (index, key) in moves.into_iter().enumerate() {
-            if pressed(key, alt) {
-                if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                    let mut panes = Vec::new();
-                    tab.layout.panes(&mut panes);
-                    if let Some(pos) = panes.iter().position(|p| *p == tab.focused) {
-                        let step = if index < 2 { 1 } else { panes.len() - 1 };
-                        tab.focused = panes[(pos + step) % panes.len()];
-                    }
-                }
+    }
+
+    fn step_pane(&mut self, forward: bool) {
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            let mut panes = Vec::new();
+            tab.layout.panes(&mut panes);
+            if let Some(pos) = panes.iter().position(|p| *p == tab.focused) {
+                let step = if forward { 1 } else { panes.len() - 1 };
+                tab.focused = panes[(pos + step) % panes.len()];
             }
         }
     }

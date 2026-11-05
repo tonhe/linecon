@@ -241,6 +241,7 @@ fn prompts_and_host_keys_appear_as_cards() {
              The server's rsa2 key fingerprint is:\n  ssh-rsa 1024 SHA256:Qm1t9V0mB2Xk7eQe1n3Y"
             .into(),
         known_types: Vec::new(),
+        changed: false,
     }));
     let mut h = harness(s.app);
     h.run_steps(3);
@@ -406,6 +407,7 @@ fn saved_password_logs_in_without_asking() {
             copy_on_select: true,
             auto_reconnect: false,
             accept_weak: true,
+            trust_new_host_keys: false,
             password: Some(Arc::new(move || Some(Zeroizing::new(password.to_string())))),
         };
         Pane::new(spec, Arc::new(|| {}))
@@ -538,6 +540,7 @@ fn a_dropped_connection_reconnects_when_asked_to() {
         copy_on_select: true,
         auto_reconnect: true,
         accept_weak: false,
+        trust_new_host_keys: false,
         password: None,
     };
     let mut pane = Pane::new(spec, Arc::new(|| {}));
@@ -642,6 +645,7 @@ fn legacy_toggle_reaches_an_ssh1_only_device() {
         copy_on_select: true,
         auto_reconnect: false,
         accept_weak: true,
+        trust_new_host_keys: false,
         password: Some(Arc::new(|| {
             Some(Zeroizing::new("lab-password".to_string()))
         })),
@@ -684,6 +688,7 @@ fn search_finds_scrollback_and_steps_between_matches() {
         copy_on_select: true,
         auto_reconnect: false,
         accept_weak: false,
+        trust_new_host_keys: false,
         password: None,
     };
     let pane = Pane::offline(spec, Arc::new(|| {}));
@@ -842,6 +847,7 @@ fn file_browser_moves_files_against_the_legacy_server() {
             Some(Zeroizing::new("lab-password".to_string()))
         })),
         true,
+        false,
         Arc::new(|| {}),
     );
     let wait_idle = |pane: &mut SftpPane| {
@@ -1416,6 +1422,7 @@ fn real_devices_through_the_window_path() {
             copy_on_select: true,
             auto_reconnect: false,
             accept_weak: resolved.legacy_algorithms.value,
+            trust_new_host_keys: false,
             password: Some(Arc::new(move || Some(Zeroizing::new(password.clone())))),
         };
         assert!(!spec.accept_weak, "this must test default settings");
@@ -1788,6 +1795,7 @@ fn a_host_known_with_a_different_key_says_so() {
         port: 22,
         description: "The host key is not cached for this server".into(),
         known_types: vec!["ssh-ed25519".into()],
+        changed: false,
     }));
     let mut h = harness(s.app);
     h.run_steps(3);
@@ -2391,4 +2399,244 @@ fn the_about_box_keeps_keys_from_the_device() {
     );
     let got: Vec<u8> = rx.try_iter().flatten().collect();
     assert!(got.is_empty(), "sent to the device: {got:?}");
+}
+
+fn has_keyboard(h: &Harness<'static, App>, label: &str) -> bool {
+    use egui_kittest::kittest::NodeT;
+    h.get_by_label(label).accesskit_node().is_focused()
+}
+
+fn host_key_prompt(known_types: Vec<String>, changed: bool) -> HostKeyPrompt {
+    HostKeyPrompt {
+        key_type: "ssh-ed25519".into(),
+        key: "abc".into(),
+        port: 22,
+        description: "The fingerprint is:\n  ssh-ed25519 255 SHA256:abcdef".into(),
+        known_types,
+        changed,
+    }
+}
+
+/// Enter takes a key the first time a host is seen, and nothing has to be clicked.
+#[test]
+fn enter_trusts_a_new_host() {
+    let mut s = sample();
+    s.app.add_demo_tab("core-sw1", Some(s.core_sw), b"");
+    s.app
+        .demo_pending(Pending::HostKey(host_key_prompt(Vec::new(), false)));
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    assert!(has_keyboard(&h, "Trust and remember"));
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(h.query_by_label("Trust and remember").is_none());
+}
+
+/// A contradicted key must never be one keystroke from being trusted.
+#[test]
+fn enter_never_trusts_a_changed_key() {
+    for (known, changed) in [(Vec::new(), true), (vec!["ssh-rsa".to_string()], false)] {
+        let mut s = sample();
+        s.app.add_demo_tab("core-sw1", Some(s.core_sw), b"");
+        s.app
+            .demo_pending(Pending::HostKey(host_key_prompt(known, changed)));
+        let mut h = harness(s.app);
+        h.run_steps(3);
+        assert!(has_keyboard(&h, "Cancel"));
+        assert!(!has_keyboard(&h, "Trust and remember"));
+    }
+}
+
+/// Typing in a field stays in that field when a question arrives.
+#[test]
+fn a_host_key_question_does_not_take_a_field_from_the_user() {
+    let mut s = sample();
+    s.app.add_demo_tab("core-sw1", Some(s.core_sw), b"");
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    let field = egui::Id::unique("some-field");
+    h.ctx.memory_mut(|m| m.request_focus(field));
+    h.state_mut()
+        .demo_pending(Pending::HostKey(host_key_prompt(Vec::new(), false)));
+    h.run_steps(1);
+    assert!(!has_keyboard(&h, "Trust and remember"));
+}
+
+#[test]
+fn only_a_host_with_nothing_remembered_counts_as_new() {
+    assert!(host_key_prompt(Vec::new(), false).is_new_host());
+    assert!(!host_key_prompt(Vec::new(), true).is_new_host());
+    assert!(!host_key_prompt(vec!["ssh-rsa".into()], false).is_new_host());
+    assert_eq!(
+        host_key_prompt(Vec::new(), false).fingerprint(),
+        "ssh-ed25519 255 SHA256:abcdef"
+    );
+}
+
+#[test]
+fn the_session_manager_opens_with_the_keyboard_in_its_search() {
+    let mut h = harness(App::new(location()));
+    h.run_steps(2);
+    h.key_press_modifiers(app_shortcut(), egui::Key::O);
+    h.run_steps(3);
+    assert_eq!(
+        h.ctx.memory(|m| m.focused()),
+        Some(egui::Id::unique("linecon-manager-search"))
+    );
+}
+
+/// On real SSH: a new host connects without asking and is remembered, and a contradicted key
+/// still stops and asks, with the setting on.
+#[test]
+fn the_trust_setting_only_covers_new_hosts() {
+    use crate::pane::{Pane, PaneSpec, Status};
+    use linecon_engine::hostkeys::{HostKeyLookup, HostKeyStore, MemoryHostKeys};
+    use linecon_engine::HostKeyVerdict;
+    use std::process::Command;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use zeroize::Zeroizing;
+
+    /// Remembers keys, and claims anything at this address has changed.
+    #[derive(Default)]
+    struct Store(MemoryHostKeys);
+    impl HostKeyStore for Store {
+        fn check(&self, host: &str, port: i32, key_type: &str, key: &str) -> HostKeyLookup {
+            if host == "127.0.0.2" {
+                HostKeyLookup::Changed
+            } else {
+                self.0.check(host, port, key_type, key)
+            }
+        }
+        fn store(&self, host: &str, port: i32, key_type: &str, key: &str) {
+            self.0.store(host, port, key_type, key);
+        }
+    }
+
+    let docker = |args: &[&str]| -> Option<String> {
+        let out = Command::new("docker").args(args).output().ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let context = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/docker/legacy-sshd"
+    );
+    let name = format!("linecon-trust-{}", std::process::id());
+    let started = docker(&["build", "-q", "-t", "linecon-legacy-sshd", context]).and_then(|_| {
+        docker(&[
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            &name,
+            "-P",
+            "linecon-legacy-sshd",
+        ])
+    });
+    if started.is_none() {
+        assert!(
+            std::env::var_os("LINECON_REQUIRE_DOCKER").is_none(),
+            "Docker is required here"
+        );
+        eprintln!("SKIPPED: no container runtime");
+        return;
+    }
+    struct Stop<'a>(&'a str);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            let _ = Command::new("docker").args(["rm", "-f", self.0]).output();
+        }
+    }
+    let _stop = Stop(&name);
+    let port: u16 = docker(&["port", &name, "2201"])
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+
+    let store = Arc::new(Store::default());
+    linecon_engine::set_hostkey_store(store.clone());
+    let run = |host: &str| {
+        let mut settings = linecon_engine::settings::Settings::ssh(host, port, "lab");
+        settings.algorithms(&AlgorithmPolicy::legacy());
+        Pane::new(
+            PaneSpec {
+                name: "lab".into(),
+                session_id: None,
+                settings,
+                policy: AlgorithmPolicy::legacy(),
+                log_dir: None,
+                scrollback: 1000,
+                copy_on_select: true,
+                auto_reconnect: false,
+                accept_weak: true,
+                trust_new_host_keys: true,
+                password: Some(Arc::new(|| {
+                    Some(Zeroizing::new("lab-password".to_string()))
+                })),
+            },
+            Arc::new(|| {}),
+        )
+    };
+
+    let pane = run("127.0.0.1");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while pane.status() != Status::Live {
+        assert!(Instant::now() < deadline, "{:?}", pane.status());
+        assert!(
+            pane.shared.pending.lock().unwrap().is_none(),
+            "a new host was asked about"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let text = pane.shared.core.lock().unwrap().text_with_scrollback(500);
+    assert!(text.contains("remembered this new host's key"), "{text}");
+    assert!(text.contains("SHA256:"), "{text}");
+    assert!(!store.0.known_types("127.0.0.1", port as i32).is_empty());
+    drop(pane);
+
+    let pane = run("127.0.0.2");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "never asked about a changed key: {:?}",
+            pane.status()
+        );
+        assert_ne!(pane.status(), Status::Live, "connected past a changed key");
+        let pending = pane.shared.pending.lock().unwrap().clone();
+        if let Some(Pending::HostKey(key)) = pending {
+            assert!(key.changed);
+            pane.answer_hostkey(HostKeyVerdict::Reject);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(store.0.known_types("127.0.0.2", port as i32).is_empty());
+}
+
+/// Shortcuts come from the menus, so the one in a menu is the one that runs.
+#[test]
+fn the_session_settings_shortcut_is_in_its_menu_and_works() {
+    let mut s = sample();
+    s.app.add_demo_tab("core-sw1", Some(s.core_sw), b"");
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    h.get_by_label("View").click();
+    h.run_steps(3);
+    h.get_by_label_contains("Session Settings");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(h.query_by_label("Connect").is_none());
+    h.key_press_modifiers(app_shortcut(), egui::Key::I);
+    h.run_steps(3);
+    h.get_by_label("Connect");
 }

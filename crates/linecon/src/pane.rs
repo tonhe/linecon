@@ -37,6 +37,7 @@ pub struct PaneSpec {
     pub auto_reconnect: bool,
     /// Accept weak algorithms without asking. True when the legacy toggle is on.
     pub accept_weak: bool,
+    pub trust_new_host_keys: bool,
     /// Fetches the saved password when the device asks for one. Held as a lookup
     /// so the secret spends as little time in memory as possible.
     pub password: Option<PasswordLookup>,
@@ -602,6 +603,14 @@ fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint:
                     password_refused |= tried_password;
                     *shared.pending.lock().unwrap() = Some(Pending::Prompt(prompt));
                 }
+            }
+            Event::HostKey(key) if spec.trust_new_host_keys && key.is_new_host() => {
+                let notice = format!(
+                    "\r\n[linecon0: remembered this new host's key: {}]\r\n",
+                    key.fingerprint()
+                );
+                shared.core.lock().unwrap().feed(notice.as_bytes());
+                session.answer_hostkey(HostKeyVerdict::AcceptAndStore);
             }
             Event::HostKey(key) => {
                 *shared.pending.lock().unwrap() = Some(Pending::HostKey(key));

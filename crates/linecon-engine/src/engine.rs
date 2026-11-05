@@ -70,6 +70,24 @@ pub struct HostKeyPrompt {
     /// new host: something is offering a key it has not used before, which is also what a
     /// machine in the middle would do.
     pub known_types: Vec<String>,
+    /// A different key is remembered for this host and key type.
+    pub changed: bool,
+}
+
+impl HostKeyPrompt {
+    /// Nothing at all is remembered for this host, so there is nothing to contradict.
+    pub fn is_new_host(&self) -> bool {
+        !self.changed && self.known_types.is_empty()
+    }
+
+    /// The fingerprint line of the description, or the key type if it has none.
+    pub fn fingerprint(&self) -> &str {
+        self.description
+            .lines()
+            .map(str::trim)
+            .find(|line| line.contains("SHA256:"))
+            .unwrap_or(&self.key_type)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,12 +215,18 @@ unsafe extern "C" fn on_event(ev: *const sys::lc_event) -> usize {
             let store = hostkeys().read().unwrap().clone();
             let mut known_types = store.known_types(&host, ev.arg);
             known_types.retain(|known| *known != key_type);
+            let key = opt_string(ev.str2).unwrap_or_default();
+            let changed = matches!(
+                store.check(&host, ev.arg, &key_type, &key),
+                HostKeyLookup::Changed
+            );
             Event::HostKey(HostKeyPrompt {
                 key_type,
-                key: opt_string(ev.str2).unwrap_or_default(),
+                key,
                 port: ev.arg,
                 description: opt_string(ev.text).unwrap_or_default(),
                 known_types,
+                changed,
             })
         }
         sys::LC_EV_WEAK_CRYPTO => Event::WeakCrypto {

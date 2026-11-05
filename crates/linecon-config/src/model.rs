@@ -205,6 +205,10 @@ pub struct Config {
     /// Browse sessions in the session manager, with no sidebar at all.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub use_session_manager: bool,
+    /// Remember the key of a host seen for the first time without asking. A key that differs
+    /// from a remembered one always asks.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub trust_new_host_keys: bool,
     /// Settings applied at the root, beneath every folder.
     pub settings: Overrides,
     pub next_id: Id,
@@ -223,6 +227,7 @@ impl Default for Config {
             mcp_enabled: false,
             update_checks: None,
             use_session_manager: false,
+            trust_new_host_keys: false,
             settings: Overrides::default(),
             next_id: 1,
             identities: Vec::new(),

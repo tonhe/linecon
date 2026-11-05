@@ -601,6 +601,21 @@ impl App {
                     changed |= self.snippets_section(ui, target, chrome);
                 }
                 if target == InspectTarget::Root {
+                    ui.separator();
+                    changed |= ui
+                        .checkbox(
+                            &mut self.config.trust_new_host_keys,
+                            "Always trust and remember new host keys",
+                        )
+                        .changed();
+                    ui.label(
+                        RichText::new(
+                            "Hosts seen for the first time connect without asking, and their \
+                             fingerprint is shown in the terminal. A key that differs from a \
+                             remembered one always asks.",
+                        )
+                        .color(chrome.muted),
+                    );
                     self.identities_section(ui, chrome);
                 }
             });

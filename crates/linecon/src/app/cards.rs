@@ -7,13 +7,48 @@ pub(super) fn host_key_heading(
     key: &linecon_engine::HostKeyPrompt,
     chrome: &Chrome,
 ) -> (&'static str, Color32) {
-    if key.description.contains("does not match") {
+    if key.changed {
         ("Host key has CHANGED", chrome.danger)
     } else if !key.known_types.is_empty() {
         ("This host is known with a different key", chrome.danger)
     } else {
         ("Unknown host key", chrome.warning)
     }
+}
+
+/// The three answers. Enter takes the highlighted one: trusting a host never seen before, or
+/// backing out of a key that contradicts what is remembered. That one takes a deliberate click.
+/// `terminal` may be typing when the question arrives; any other field keeps the keyboard.
+pub(super) fn host_key_buttons(
+    ui: &mut Ui,
+    key: &linecon_engine::HostKeyPrompt,
+    terminal: Option<egui::Id>,
+) -> Option<HostKeyVerdict> {
+    let mut answer = None;
+    ui.horizontal(|ui| {
+        let trust = ui.button("Trust and remember");
+        if trust.clicked() {
+            answer = Some(HostKeyVerdict::AcceptAndStore);
+        }
+        if ui.button("Connect once").clicked() {
+            answer = Some(HostKeyVerdict::AcceptOnce);
+        }
+        let cancel = ui.button("Cancel");
+        if cancel.clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+            answer = Some(HostKeyVerdict::Reject);
+        }
+        let idle = ui
+            .ctx()
+            .memory(|m| m.focused().is_none_or(|f| Some(f) == terminal));
+        if idle && answer.is_none() {
+            if key.is_new_host() {
+                trust.request_focus();
+            } else {
+                cancel.request_focus();
+            }
+        }
+    });
+    answer
 }
 
 pub(super) fn entry_policy(
@@ -269,17 +304,9 @@ impl App {
                                 );
                             });
                         ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Trust and remember").clicked() {
-                                action = CardAction::HostKey(HostKeyVerdict::AcceptAndStore);
-                            }
-                            if ui.button("Connect once").clicked() {
-                                action = CardAction::HostKey(HostKeyVerdict::AcceptOnce);
-                            }
-                            if ui.button("Cancel").clicked() {
-                                action = CardAction::HostKey(HostKeyVerdict::Reject);
-                            }
-                        });
+                        if let Some(verdict) = host_key_buttons(ui, key, Some(terminal_id(id))) {
+                            action = CardAction::HostKey(verdict);
+                        }
                     }
                     (None, Status::Closed { reason }) => {
                         if let Some(failure) = &failure {

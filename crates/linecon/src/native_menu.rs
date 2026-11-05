@@ -8,12 +8,24 @@ pub(crate) static COMMANDS: std::sync::Mutex<Vec<Command>> = std::sync::Mutex::n
 
 #[cfg(target_os = "macos")]
 mod platform {
+    use muda::accelerator::Accelerator;
     use muda::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 
     use super::*;
 
+    static CHOSEN: std::sync::Mutex<Option<std::sync::mpsc::Receiver<MenuEvent>>> =
+        std::sync::Mutex::new(None);
+
     /// Installs the menu bar. It has to be called on the main thread, once the app exists.
-    pub fn install() {
+    /// `wake` draws a frame: a shortcut taken by the menu is no input the window would see,
+    /// and nothing else would run the command until the keys came up.
+    pub fn install(wake: impl Fn() + Send + Sync + 'static) {
+        let (chosen, receiver) = std::sync::mpsc::channel();
+        *CHOSEN.lock().unwrap() = Some(receiver);
+        MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+            let _ = chosen.send(event);
+            wake();
+        }));
         let columns = crate::app::native_menu_items(crate::app::has_update_key());
         let menu = Menu::new();
         for (index, (title, entries)) in columns.into_iter().enumerate() {
@@ -21,10 +33,10 @@ mod platform {
             for entry in entries {
                 let _ = match entry {
                     None => submenu.append(&PredefinedMenuItem::separator()),
-                    Some((label, id)) => {
-                        // No accelerators: shortcuts are handled by the window, and a
-                        // menu that also took them would run each one twice or lose it.
-                        submenu.append(&MenuItem::with_id(id.to_string(), label, true, None))
+                    Some((label, keys, id)) => {
+                        // A key the menu claims never reaches the window, so it runs once.
+                        let keys = keys.and_then(|k| k.parse::<Accelerator>().ok());
+                        submenu.append(&MenuItem::with_id(id.to_string(), label, true, keys))
                     }
                 };
             }
@@ -46,10 +58,12 @@ mod platform {
     pub fn take_chosen() -> Vec<Command> {
         let commands = COMMANDS.lock().unwrap();
         let mut chosen = Vec::new();
-        while let Ok(event) = MenuEvent::receiver().try_recv() {
-            let index = event.id().0.parse::<usize>().ok();
-            if let Some(command) = index.and_then(|i| commands.get(i)) {
-                chosen.push(command.clone());
+        if let Some(receiver) = CHOSEN.lock().unwrap().as_ref() {
+            while let Ok(event) = receiver.try_recv() {
+                let index = event.id().0.parse::<usize>().ok();
+                if let Some(command) = index.and_then(|i| commands.get(i)) {
+                    chosen.push(command.clone());
+                }
             }
         }
         chosen
@@ -60,7 +74,7 @@ mod platform {
 mod platform {
     use super::*;
 
-    pub fn install() {}
+    pub fn install(_wake: impl Fn() + Send + Sync + 'static) {}
 
     pub fn take_chosen() -> Vec<Command> {
         Vec::new()

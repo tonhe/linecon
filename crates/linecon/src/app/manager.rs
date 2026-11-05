@@ -8,6 +8,7 @@ impl App {
     /// shows it inside the main one instead.
     pub(super) fn session_manager(&mut self, ctx: &egui::Context, chrome: &Chrome) {
         if !self.manager_open {
+            self.manager_wants_focus = true;
             return;
         }
         let builder = egui::ViewportBuilder::default()
@@ -57,12 +58,18 @@ impl App {
                 });
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    ui.add(
+                    let search = ui.add(
                         TextEdit::singleline(&mut self.manager_search)
                             .id(egui::Id::unique("linecon-manager-search"))
                             .hint_text("Search sessions")
                             .desired_width(ui.available_width() * 0.55),
                     );
+                    // Asked for until the new window is really the one in front.
+                    if self.manager_wants_focus {
+                        search.request_focus();
+                        self.manager_wants_focus =
+                            ui.input(|i| i.viewport().focused) == Some(false);
+                    }
                     let connect = ui.add(
                         TextEdit::singleline(&mut self.quick_connect)
                             .id(egui::Id::unique("linecon-manager-connect"))
