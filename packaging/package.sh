@@ -53,10 +53,10 @@ sign_and_notarize() {
   }
   ditto -c -k --keepParent "$app_path" "$work/app.zip"
   notarize "$work/app.zip"
-  # Fetching the ticket is a network call that sometimes drops, and an accepted build
+  # Fetching and checking the ticket are network calls that sometimes drop, and an accepted build
   # should not fail a release for that.
   attempt=1
-  until xcrun stapler staple "$app_path"; do
+  until xcrun stapler staple "$app_path" && xcrun stapler validate "$app_path"; do
     if [ "$attempt" -ge 5 ]; then
       echo "could not staple after $attempt attempts" >&2
       exit 1
@@ -64,7 +64,6 @@ sign_and_notarize() {
     attempt=$((attempt + 1))
     sleep 30
   done
-  xcrun stapler validate "$app_path"
   spctl --assess --type execute --verbose=2 "$app_path"
   # A bare executable cannot hold a ticket, but Apple's servers know it once submitted.
   ditto -c -k "$bare" "$work/bare.zip"
