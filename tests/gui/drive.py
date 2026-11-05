@@ -277,18 +277,36 @@ def menus():
     gone("MIT licensed")
 
 
+def whole_screen_text():
+    """For a second window, which can sit outside what words() crops to, and for muted text."""
+    sh("import", "-window", "root", "/tmp/whole.png")
+    return sh("tesseract", "/tmp/whole.png", "-", "--psm", "11").stdout.lower()
+
+
+def wait_whole_screen(text, present=True, timeout=15):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if (text.lower() in whole_screen_text()) == present:
+            return
+        time.sleep(0.4)
+    raise AssertionError(f"{text!r} {'never appeared' if present else 'never went away'}")
+
+
 @step("the session manager opens ready to search")
 def manager_search():
     key("ctrl+shift+o")
     wait("New folder")
-    # Only a search that received the text can say this.
-    typed("findme")
-    wait("Nothing matches")
-    shot("manager-search")
-    key(*["BackSpace"] * 6)
-    gone("Nothing matches")
-    click("Close", 0)
-    gone("New folder")
+    try:
+        # Only a search that received the text can say this.
+        typed("findme")
+        wait_whole_screen("Nothing matches")
+        shot("manager-search")
+        key(*["BackSpace"] * 6)
+        wait_whole_screen("Nothing matches", present=False)
+    finally:
+        # Left open, it would cover the main window for every later step.
+        click("Close", 0)
+        gone("New folder")
 
 
 @step("command palette opens, filters, runs a theme change")
