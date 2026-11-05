@@ -2652,3 +2652,39 @@ fn the_first_screen_is_captured_for_review() {
     h.run_steps(3);
     screenshot(&mut h, "first-screen");
 }
+
+/// A field holding the keyboard, with a session open, once redrew flat out and took a whole
+/// core for as long as it stayed there.
+#[test]
+fn a_focused_field_does_not_keep_the_window_redrawing() {
+    let mut s = sample();
+    s.app.add_demo_tab("core-sw1", Some(s.core_sw), b"");
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    h.get_all_by_role(egui::accesskit::Role::TextInput)
+        .next()
+        .unwrap()
+        .click();
+    h.run_steps(5);
+    assert!(h.ctx.memory(|m| m.focused()).is_some());
+    h.run_steps(5);
+    assert!(h.run_ok().is_some(), "never stopped redrawing");
+}
+
+/// Typing in a field writes once, after a pause.
+#[test]
+fn changes_save_after_a_pause() {
+    let place = location();
+    let mut h = harness(App::new(place.clone()));
+    h.run_steps(3);
+    h.state_mut().set_update_checks(Some(false));
+    h.state_mut().mark_dirty_for_test();
+    h.run_steps(2);
+    let saved = |place: &linecon_config::ConfigLocation| {
+        std::fs::read_to_string(place.config_file()).unwrap_or_default()
+    };
+    assert!(!saved(&place).contains("update_checks"), "saved at once");
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    h.run_steps(2);
+    assert!(saved(&place).contains("update_checks"), "never saved");
+}

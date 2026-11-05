@@ -273,6 +273,9 @@ impl App {
                             linecon_engine::VERSION,
                             linecon_engine::PUTTY_COMMIT
                         ));
+                        if !self.renderer_info.is_empty() {
+                            ui.label(RichText::new(&self.renderer_info).color(chrome.muted));
+                        }
                         ui.add_space(6.0);
                         ui.label(
                             RichText::new(

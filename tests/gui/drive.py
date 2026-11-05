@@ -292,6 +292,25 @@ def wait_whole_screen(text, present=True, timeout=15):
     raise AssertionError(f"{text!r} {'never appeared' if present else 'never went away'}")
 
 
+@step("an open session and a focused field leave the window idle")
+def idle_cpu():
+    # Redrawing flat out looks fine in every screenshot. Only the CPU shows it.
+    click("user@host", 0)
+    sh("xdotool", "mousemove", "1250", "780")
+    time.sleep(1)
+    pid = sh("pgrep", "-x", "linecon").stdout.split()[0]
+
+    def ticks():
+        fields = open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()
+        return int(fields[11]) + int(fields[12])
+
+    before = ticks()
+    time.sleep(5)
+    used = (ticks() - before) / os.sysconf("SC_CLK_TCK") / 5
+    assert used < 0.5, f"using {used * 100:.0f}% of a core while idle"
+    click_xy(800, 600)
+
+
 @step("the session manager opens ready to search")
 def manager_search():
     key("ctrl+shift+o")

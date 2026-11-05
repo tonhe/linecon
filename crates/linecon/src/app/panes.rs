@@ -114,7 +114,9 @@ impl App {
         let keyboard_was_elsewhere = self
             .focus_last_frame
             .is_some_and(|last| last != terminal_id(id));
-        if keyboard_was_elsewhere {
+        // Only as the keyboard comes back. While a field holds it nothing here is waiting, and
+        // asking anyway would redraw flat out for as long as the field has focus.
+        if keyboard_was_elsewhere && !self.other_widget_has_focus(&ctx) {
             ctx.request_repaint();
         }
         let focused = is_focused_pane

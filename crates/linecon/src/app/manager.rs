@@ -9,12 +9,25 @@ impl App {
     pub(super) fn session_manager(&mut self, ctx: &egui::Context, chrome: &Chrome) {
         if !self.manager_open {
             self.manager_wants_focus = true;
+            self.manager_position = None;
             return;
         }
-        let builder = egui::ViewportBuilder::default()
+        const SIZE: egui::Vec2 = vec2(900.0, 600.0);
+        if self.manager_position.is_none() {
+            // Over the main window, whichever monitor that is on.
+            let main = ctx.input_for(egui::ViewportId::ROOT, |i| i.viewport().outer_rect);
+            self.manager_position = main.map(|rect| {
+                let corner = rect.center() - SIZE / 2.0;
+                pos2(corner.x, corner.y.max(rect.top()))
+            });
+        }
+        let mut builder = egui::ViewportBuilder::default()
             .with_title("linecon0 sessions")
-            .with_inner_size([900.0, 600.0])
+            .with_inner_size(SIZE)
             .with_min_inner_size([560.0, 320.0]);
+        if let Some(position) = self.manager_position {
+            builder = builder.with_position(position);
+        }
         let tabs_before = self.tabs.len();
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("linecon-session-manager"),

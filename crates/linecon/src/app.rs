@@ -263,6 +263,11 @@ pub struct App {
     manager_search: String,
     /// The window just opened, and its search field should get the keyboard.
     manager_wants_focus: bool,
+    /// Where it opened, fixed so it does not follow the main window around.
+    manager_position: Option<egui::Pos2>,
+    dirty_since: Option<Instant>,
+    /// What is drawing the window, for telling a slow software renderer from a slow program.
+    renderer_info: String,
     inspector: Option<InspectTarget>,
     renaming: Option<(Id, String)>,
     paste_confirm: Option<(PaneId, String)>,
@@ -280,6 +285,7 @@ pub struct App {
 }
 
 const AUTHOR: &str = "Tony Mattke";
+const SAVE_PAUSE: Duration = Duration::from_millis(600);
 
 /// A shortcut as this platform writes it.
 fn shortcut(key: &str) -> String {
@@ -448,6 +454,9 @@ impl App {
             manager_open: false,
             manager_search: String::new(),
             manager_wants_focus: false,
+            manager_position: None,
+            dirty_since: None,
+            renderer_info: String::new(),
             inspector: None,
             renaming: None,
             paste_confirm: None,
@@ -466,6 +475,22 @@ impl App {
             agent_server: None,
             unlock: None,
             password_drafts: HashMap::new(),
+        }
+    }
+
+    /// Saves shortly after a change, so typing in a field is not a disk write per key.
+    fn save_after_pause(&mut self, ctx: &egui::Context) {
+        if !self.dirty {
+            self.dirty_since = None;
+            return;
+        }
+        let since = *self.dirty_since.get_or_insert_with(Instant::now);
+        let left = SAVE_PAUSE.saturating_sub(since.elapsed());
+        if left.is_zero() {
+            self.save_if_needed();
+            self.dirty_since = None;
+        } else {
+            ctx.request_repaint_after(left);
         }
     }
 
@@ -935,6 +960,10 @@ impl App {
     }
 
     /// Draws everything. Separate from the eframe trait so tests can drive it.
+    pub fn set_renderer_info(&mut self, info: String) {
+        self.renderer_info = info;
+    }
+
     pub fn show(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         if self.repaint.is_none() {
@@ -1091,13 +1120,17 @@ impl App {
         self.poll_native_menu(&ctx);
         self.poll_updates();
         self.update_overlay(&ctx, &chrome);
-        self.save_if_needed();
+        self.save_after_pause(&ctx);
     }
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.save_if_needed();
     }
 }
 

@@ -62,6 +62,11 @@ fn run_window(smoke: Option<std::path::PathBuf>) -> i32 {
     for renderer in renderers() {
         let options = eframe::NativeOptions {
             renderer,
+            // Each queued frame is a frame of delay between a key and its echo.
+            wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+                surface: eframe::egui_wgpu::SurfaceConfig::LOW_LATENCY,
+                ..Default::default()
+            },
             viewport: egui::ViewportBuilder::default()
                 .with_title("linecon0")
                 .with_app_id("linecon")
@@ -82,7 +87,17 @@ fn run_window(smoke: Option<std::path::PathBuf>) -> i32 {
                 update::clean_up_after_update();
                 let wake = cc.egui_ctx.clone();
                 native_menu::install(move || wake.request_repaint());
-                let app = app::App::new(location);
+                let mut app = app::App::new(location);
+                app.set_renderer_info(match &cc.wgpu_render_state {
+                    Some(state) => {
+                        let info = state.adapter.get_info();
+                        format!(
+                            "Drawn by {:?} on {} ({:?})",
+                            info.backend, info.name, info.device_type
+                        )
+                    }
+                    None => "Drawn by OpenGL".to_string(),
+                });
                 Ok(match smoke {
                     Some(file) => Box::new(SmokeTest {
                         app,
