@@ -486,7 +486,8 @@ def search():
     typed("Cisco")
     time.sleep(1)
     shot("search")
-    _, x, y = locate("Cisco", 0)
+    # OCR misreads the highlighted match ("Cised"), and the bar holds the word too.
+    wait("Cisc")
     # Escape closes the bar, and typing goes back to the device.
     key("Escape")
     time.sleep(0.5)
