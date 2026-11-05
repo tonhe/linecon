@@ -487,7 +487,7 @@ def search():
     time.sleep(1)
     shot("search")
     # OCR misreads the highlighted match ("Cised"), and the bar holds the word too.
-    wait("Cisc")
+    wait("Cisc|cised")
     # Escape closes the bar, and typing goes back to the device.
     key("Escape")
     time.sleep(0.5)
