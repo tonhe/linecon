@@ -380,11 +380,49 @@ pub fn clean_up_after_update() {
     }
 }
 
+/// How long the new program gets to answer. Windows may hold a freshly downloaded program
+/// for a virus scan before it runs at all, which on one cloud desktop took minutes.
+const VERSION_CHECK_LIMIT: Duration = Duration::from_secs(120);
+
 fn require_version(program: &Path, version: &str) -> io::Result<()> {
-    let output = Command::new(program).arg("--version").output()?;
-    let text = String::from_utf8_lossy(&output.stdout);
+    require_version_within(program, version, VERSION_CHECK_LIMIT)
+}
+
+fn require_version_within(program: &Path, version: &str, limit: Duration) -> io::Result<()> {
+    let mut child = Command::new(program)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    // Read on the side, so a program that writes a lot cannot stall on a full pipe.
+    let mut stdout = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(out) = stdout.as_mut() {
+            let _ = out.take(64 * 1024).read_to_string(&mut text);
+        }
+        text
+    });
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() >= limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io::Error::other(format!(
+                "the new version did not answer within {} seconds, so nothing was changed. \
+                 Windows may still be scanning it: try again in a few minutes",
+                limit.as_secs()
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let text = reader.join().unwrap_or_default();
     // A whole word: alpha.1 must not pass for alpha.15.
-    if output.status.success() && text.split_whitespace().any(|word| word == version) {
+    if status.success() && text.split_whitespace().any(|word| word == version) {
         Ok(())
     } else {
         Err(io::Error::other(format!(
@@ -792,6 +830,22 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
             exe
+        }
+
+        /// A program that never answers is given up on, and nothing is replaced.
+        #[test]
+        fn a_new_version_that_never_answers_is_given_up_on() {
+            let exe = installed("hangs", "1.0.0");
+            let stuck = exe.with_file_name("stuck");
+            fs::write(&stuck, "#!/bin/sh\nsleep 30\n").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&stuck, fs::Permissions::from_mode(0o755)).unwrap();
+            let started = std::time::Instant::now();
+            let error =
+                require_version_within(&stuck, "1.0.0", Duration::from_millis(500)).unwrap_err();
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert!(error.to_string().contains("did not answer"), "{error}");
+            assert!(require_version_within(&exe, "1.0.0", Duration::from_secs(10)).is_ok());
         }
 
         /// What Restart relies on: the path it runs must be the new program, not the old copy.
