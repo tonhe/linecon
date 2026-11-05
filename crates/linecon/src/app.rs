@@ -993,7 +993,7 @@ impl App {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        if self.new_session.is_some() {
+        if self.new_session.is_some() || self.pending_delete.is_some() {
             return;
         }
         let pressed = |key: Key, mods: Modifiers| ctx.input_mut(|i| i.consume_key(mods, key));

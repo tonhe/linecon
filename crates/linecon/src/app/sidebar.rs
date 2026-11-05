@@ -325,7 +325,6 @@ impl App {
             .filter_map(|e| e.pane.spec.session_id)
             .collect();
         let mut actions = Vec::new();
-        // Above the tree, which takes all the space below it.
         if let Some(id) = self.pending_delete {
             let (name, is_folder) = match self.config.find(id) {
                 Some(node) => (node.name().to_string(), matches!(node, Node::Folder(_))),
@@ -336,14 +335,28 @@ impl App {
             } else {
                 format!("Delete {name}?")
             };
-            ui.label(RichText::new(question).color(chrome.danger));
-            ui.horizontal(|ui| {
-                if ui.button("Delete").clicked() {
-                    actions.push(TreeAction::Delete(id));
-                }
-                if ui.button("Keep").clicked() {
-                    self.pending_delete = None;
-                }
+            // Read first: the modal takes Escape for itself.
+            let keep_key = ui.input(|i| i.key_pressed(Key::Escape));
+            egui::Modal::new(egui::Id::unique("linecon-confirm-delete")).show(ui.ctx(), |ui| {
+                ui.set_width(340.0);
+                ui.label(RichText::new(question).size(15.0));
+                ui.add_space(4.0);
+                ui.label(RichText::new("This cannot be undone.").color(chrome.muted));
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let delete = egui::Button::new(RichText::new("Delete").color(chrome.danger));
+                    if ui.add(delete).clicked() {
+                        actions.push(TreeAction::Delete(id));
+                    }
+                    let keep = ui.button("Keep");
+                    // Enter takes the harmless answer.
+                    if ui.memory(|m| m.focused().is_none()) {
+                        keep.request_focus();
+                    }
+                    if keep.clicked() || keep_key {
+                        self.pending_delete = None;
+                    }
+                });
             });
         }
         egui::ScrollArea::vertical()

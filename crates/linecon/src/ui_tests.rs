@@ -2902,3 +2902,35 @@ fn the_first_key_after_a_field_closes_reaches_the_device() {
         .expect("the key never arrived");
     assert_eq!(got, b"e");
 }
+
+/// Deleting asks in a dialog, and Enter or Escape keep what was there.
+#[test]
+fn deleting_asks_and_the_keyboard_keeps_it() {
+    let mut s = sample();
+    let first = s.app.config.nodes[0].id();
+    let count = s.app.config.nodes.len();
+    s.app.ask_delete_first_folder();
+    let mut h = harness(s.app);
+    h.run_steps(4);
+    h.get_by_label_contains("and everything in it?");
+    assert!(has_keyboard(&h, "Keep"));
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.state().config.nodes.len(), count);
+    assert!(h.query_by_label_contains("everything in it?").is_none());
+
+    h.state_mut().ask_delete_first_folder();
+    h.run_steps(4);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert_eq!(h.state().config.nodes.len(), count);
+    assert!(h.query_by_label_contains("everything in it?").is_none());
+
+    h.state_mut().ask_delete_first_folder();
+    h.run_steps(4);
+    screenshot(&mut h, "confirm-delete");
+    h.get_by_label("Delete").click();
+    h.run_steps(3);
+    assert_eq!(h.state().config.nodes.len(), count - 1);
+    assert!(h.state().config.find(first).is_none());
+}

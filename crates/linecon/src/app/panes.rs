@@ -108,6 +108,7 @@ impl App {
             || self.unlock.is_some()
             || self.about_open
             || self.new_session.is_some()
+            || self.pending_delete.is_some()
             || !self.imported_passwords.locked.is_empty();
         let has_pending = entry.pane.shared.pending.lock().unwrap().is_some();
         // A field that had the keyboard last frame may have just given it up on this very key,
