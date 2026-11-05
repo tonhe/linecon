@@ -104,6 +104,22 @@ impl Runner {
                 &open.window,
                 &mut actions,
             );
+            // These come back as what the window would have sent had the keys been pressed.
+            for action in actions {
+                let event = match action {
+                    egui_winit::ActionRequested::Paste => {
+                        open.state.clipboard_text().map(egui::Event::Paste)
+                    }
+                    egui_winit::ActionRequested::Copy => Some(egui::Event::Copy),
+                    egui_winit::ActionRequested::Cut => Some(egui::Event::Cut),
+                    egui_winit::ActionRequested::Screenshot(_)
+                    | egui_winit::ActionRequested::PaintWhileHidden => None,
+                };
+                if let Some(event) = event {
+                    open.state.egui_input_mut().events.push(event);
+                    self.next_frame = Some(Instant::now());
+                }
+            }
             if viewport.repaint_delay != Duration::MAX {
                 let at = Instant::now() + viewport.repaint_delay;
                 self.next_frame = Some(self.next_frame.map_or(at, |t| t.min(at)));
