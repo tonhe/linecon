@@ -2630,11 +2630,14 @@ fn the_session_settings_shortcut_is_in_its_menu_and_works() {
     s.app.add_demo_tab("core-sw1", Some(s.core_sw), b"");
     let mut h = harness(s.app);
     h.run_steps(3);
-    h.get_by_label("View").click();
-    h.run_steps(3);
-    h.get_by_label_contains("Session Settings");
-    h.key_press(egui::Key::Escape);
-    h.run_steps(3);
+    // macOS shows its menus outside the window.
+    if !cfg!(target_os = "macos") {
+        h.get_by_label("View").click();
+        h.run_steps(3);
+        h.get_by_label_contains("Session Settings");
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+    }
     assert!(h.query_by_label("Connect").is_none());
     h.key_press_modifiers(app_shortcut(), egui::Key::I);
     h.run_steps(3);
