@@ -32,4 +32,4 @@ keyring = { version = "3", default-features = false, features = ["apple-native"]
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
 
 [dev-dependencies]
-bcrypt-pbkdf = "0.10"
+bcrypt-pbkdf = "0.11"
