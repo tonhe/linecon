@@ -108,6 +108,7 @@ pub fn show(
     pane: &Pane,
     theme: &Theme,
     font_size: f32,
+    highlight: bool,
     focused: bool,
     search: &Search,
     selection_anchor: &mut Option<Point>,
@@ -166,6 +167,15 @@ pub fn show(
     let mut run_font = font.clone();
     let mut run_color = Color32::TRANSPARENT;
     let mut run_y = origin.y;
+    // The tones of what is on screen, row by row, when highlighting is on.
+    let tones: Vec<Vec<Option<crate::highlight::Tone>>> = if highlight {
+        visible_rows(term, display_offset)
+            .iter()
+            .map(|row| crate::highlight::row_tones(row))
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     for indexed in content.display_iter {
         let point = indexed.point;
@@ -192,6 +202,25 @@ pub fn show(
             }
         }
         let mut fg = theme.resolve(fg, colors);
+        // Only where the device left the color alone.
+        if c.fg == Color::Named(NamedColor::Foreground) {
+            let tone = usize::try_from(row)
+                .ok()
+                .and_then(|r| tones.get(r))
+                .and_then(|t| t.get(point.column.0))
+                .copied()
+                .flatten();
+            if let Some(tone) = tone {
+                use crate::highlight::Tone;
+                fg = theme.ansi[match tone {
+                    Tone::Good => 2,
+                    Tone::Bad => 1,
+                    Tone::Warn => 3,
+                    Tone::Address => 6,
+                    Tone::Hardware => 5,
+                }];
+            }
+        }
         let mut bg = theme.resolve(c.bg, colors);
         if c.flags.contains(Flags::INVERSE) {
             std::mem::swap(&mut fg, &mut bg);
@@ -371,6 +400,34 @@ fn insert_held() -> bool {
 #[cfg(not(windows))]
 fn insert_held() -> bool {
     false
+}
+
+/// The characters on screen, one per column, as the device would be scrolled to now.
+fn visible_rows<T: alacritty_terminal::event::EventListener>(
+    term: &alacritty_terminal::Term<T>,
+    display_offset: i32,
+) -> Vec<Vec<char>> {
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line};
+    let grid = term.grid();
+    (0..grid.screen_lines() as i32)
+        .map(|row| {
+            let line = &grid[Line(row - display_offset)];
+            (0..grid.columns())
+                .map(|col| {
+                    let cell = &line[Column(col)];
+                    if cell
+                        .flags
+                        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                    {
+                        ' '
+                    } else {
+                        cell.c
+                    }
+                })
+                .collect()
+        })
+        .collect()
 }
 
 fn handle_keyboard(ui: &mut Ui, pane: &Pane, output: &mut ViewOutput) {

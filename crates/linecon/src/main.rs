@@ -9,6 +9,7 @@ mod cli;
 mod cpu_paint;
 #[cfg(not(target_os = "macos"))]
 mod cpu_window;
+mod highlight;
 mod keys;
 mod mcp;
 mod native_menu;

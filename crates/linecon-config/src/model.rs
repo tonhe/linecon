@@ -72,6 +72,9 @@ pub struct Overrides {
     pub scrollback_lines: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub copy_on_select: Option<bool>,
+    /// Colors link states and addresses in what a device prints.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub highlight_keywords: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jump_host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

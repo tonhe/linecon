@@ -70,6 +70,7 @@ inheritable! {
     font_size: u16 = 14;
     scrollback_lines: u32 = 100_000;
     copy_on_select: bool = true;
+    highlight_keywords: bool = false;
     jump_host: String = String::new();
     port_forwards: Vec<String> = Vec::new();
     logging: bool = true;

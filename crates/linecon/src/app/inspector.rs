@@ -314,6 +314,14 @@ fn terminal_rows(
         chrome,
         changed
     );
+    toggle_row!(
+        ui,
+        "Highlight states and addresses",
+        r.highlight_keywords,
+        o.highlight_keywords,
+        chrome,
+        changed
+    );
     changed
 }
 

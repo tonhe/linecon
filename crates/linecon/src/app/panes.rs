@@ -105,13 +105,15 @@ impl App {
             return;
         };
         let theme = self.pane_theme(&entry.pane);
-        let font_size = entry
+        // Followed live, so a change in settings shows at once.
+        let resolved = entry
             .pane
             .spec
             .session_id
             .and_then(|s| self.config.resolve(s))
-            .map(|r| r.font_size.value)
-            .unwrap_or(self.config.resolve_root().font_size.value) as f32;
+            .unwrap_or_else(|| self.config.resolve_root());
+        let font_size = resolved.font_size.value as f32;
+        let highlight = resolved.highlight_keywords.value;
         let is_focused_pane = self.focused_pane() == Some(id);
         let overlay_open = self.palette.is_some()
             || self.paste_confirm.is_some()
@@ -146,6 +148,7 @@ impl App {
             &entry.pane,
             &theme,
             font_size,
+            highlight,
             focused,
             &entry.search,
             &mut entry.anchor,

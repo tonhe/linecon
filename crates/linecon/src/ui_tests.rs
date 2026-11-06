@@ -3547,3 +3547,35 @@ fn every_control_has_a_name_for_screen_readers() {
         found.join("\n")
     );
 }
+
+#[test]
+fn highlighting_is_a_terminal_setting_that_applies_at_once() {
+    let s = sample();
+    let core_sw = s.core_sw;
+    let mut app = s.app;
+    app.add_demo_tab(
+        "core-sw1",
+        Some(core_sw),
+        b"GigabitEthernet1/0/1 is up, line protocol is up\r\n\
+          GigabitEthernet1/0/2 is administratively down, line protocol is down\r\n\
+          Internet address is 10.20.0.2/24, MAC 0011.2233.4455\r\n",
+    );
+    app.inspect(core_sw);
+    let mut h = harness(app);
+    h.run_steps(3);
+    h.get_by_label("Terminal").click();
+    h.run_steps(3);
+    let resolved = |h: &Harness<'static, App>| {
+        h.state()
+            .config_for_test()
+            .resolve(core_sw)
+            .unwrap()
+            .highlight_keywords
+            .value
+    };
+    assert!(!resolved(&h), "off unless asked for");
+    h.get_by_label("Highlight states and addresses").click();
+    h.run_steps(3);
+    assert!(resolved(&h));
+    screenshot(&mut h, "highlighting");
+}
