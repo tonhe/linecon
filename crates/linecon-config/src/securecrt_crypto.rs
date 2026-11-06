@@ -7,7 +7,7 @@
 //! that checksum is how a wrong passphrase is recognised. The passphrase is empty unless the
 //! user set one in SecureCRT.
 
-use aes::cipher::{block_padding::NoPadding, BlockDecryptMut, KeyIvInit};
+use aes::cipher::{block_padding::NoPadding, BlockModeDecrypt, KeyIvInit};
 use blowfish::Blowfish;
 use sha2::{Digest, Sha256, Sha512};
 use zeroize::Zeroizing;
@@ -124,7 +124,7 @@ fn open(ciphertext: &[u8], key: &[u8], iv: &[u8]) -> Result<Zeroizing<String>, D
     let mut plain = Zeroizing::new(ciphertext.to_vec());
     Aes256CbcDec::new_from_slices(key, iv)
         .map_err(|_| DecryptError::Unsupported)?
-        .decrypt_padded_mut::<NoPadding>(&mut plain)
+        .decrypt_padded::<NoPadding>(&mut plain)
         .map_err(|_| DecryptError::Unsupported)?;
     let length = plain
         .get(..4)
@@ -213,7 +213,7 @@ fn bcrypt_hash(sha2pass: &[u8; 64], sha2salt: &[u8; 64]) -> [u8; 32] {
 /// Encrypts as SecureCRT does. Tests elsewhere in this crate use it to build fixtures.
 #[cfg(test)]
 pub(crate) fn encrypt_03(password: &str, passphrase: &str, salt: [u8; 16]) -> String {
-    use aes::cipher::BlockEncryptMut;
+    use aes::cipher::BlockModeEncrypt;
     type Enc = cbc::Encryptor<aes::Aes256>;
     let mut derived = [0u8; 48];
     bcrypt_pbkdf(passphrase.as_bytes(), &salt, BCRYPT_ROUNDS, &mut derived);
@@ -224,7 +224,7 @@ pub(crate) fn encrypt_03(password: &str, passphrase: &str, salt: [u8; 16]) -> St
     let length = plain.len();
     Enc::new_from_slices(&derived[..32], &derived[32..])
         .unwrap()
-        .encrypt_padded_mut::<NoPadding>(&mut plain, length)
+        .encrypt_padded::<NoPadding>(&mut plain, length)
         .unwrap();
     let hex: String = salt
         .iter()
