@@ -18,7 +18,11 @@ export LINECON_SMOKE_FRAMES=300
 if [ "$(uname -s)" = Linux ]; then
   Xvfb :99 -screen 0 1280x800x24 >/dev/null 2>&1 &
   export DISPLAY=:99 LIBGL_ALWAYS_SOFTWARE=1
-  sleep 1
+  # A busy runner can take a while to bring the display up.
+  for _ in $(seq 1 30); do
+    [ -e /tmp/.X11-unix/X99 ] && break
+    sleep 0.5
+  done
 fi
 "$binary" --smoke-test smoke.txt &
 app=$!
