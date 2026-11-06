@@ -446,6 +446,18 @@ fn handle_keyboard(ui: &mut Ui, pane: &Pane, output: &mut ViewOutput) {
         std::sync::Arc::as_ptr(&pane.shared) as usize,
     ));
     let mut sent_with_alt: Option<u8> = ui.ctx().data(|d| d.get_temp(alt_id)).flatten();
+    // A quick Ctrl+Insert can be let go before the frame that sees its Copy event, so a
+    // release of Insert in the same frame counts as holding it.
+    let insert_let_go = events.iter().any(|e| {
+        matches!(
+            e,
+            UiEvent::Key {
+                key: Key::Insert,
+                pressed: false,
+                ..
+            }
+        )
+    });
     for event in events {
         match event {
             UiEvent::Text(text) => {
@@ -460,8 +472,11 @@ fn handle_keyboard(ui: &mut Ui, pane: &Pane, output: &mut ViewOutput) {
             // egui turns these combinations into clipboard events and swallows
             // the key. In a terminal they are control characters, unless they
             // are the macOS command key, which never reaches a remote host.
-            UiEvent::Copy => match clipboard_key(ClipboardEvent::Copy, current_mods, insert_held())
-            {
+            UiEvent::Copy => match clipboard_key(
+                ClipboardEvent::Copy,
+                current_mods,
+                insert_let_go || insert_held(),
+            ) {
                 ClipboardKey::Clipboard => copy_selection(ui.ctx(), pane),
                 ClipboardKey::Send(bytes) => out.extend(bytes),
                 ClipboardKey::Nothing => {}
@@ -478,6 +493,14 @@ fn handle_keyboard(ui: &mut Ui, pane: &Pane, output: &mut ViewOutput) {
                         other => other.to_vec(),
                     });
                 }
+            }
+            // Ctrl+V with a picture on the clipboard is still Ctrl+V to the device.
+            UiEvent::PasteImage(_)
+                if !cfg!(target_os = "macos")
+                    && current_mods.command_only()
+                    && !paste_requested =>
+            {
+                out.push(0x16)
             }
             UiEvent::Paste(text) => {
                 let ctrl_v = !cfg!(target_os = "macos") && current_mods.command_only();

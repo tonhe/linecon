@@ -3579,3 +3579,73 @@ fn highlighting_is_a_terminal_setting_that_applies_at_once() {
     assert!(resolved(&h));
     screenshot(&mut h, "highlighting");
 }
+
+#[test]
+fn quick_ctrl_insert_copies_and_ctrl_v_with_a_picture_still_reaches_the_peer() {
+    use std::io::{Read, Write};
+    if cfg!(target_os = "macos") {
+        // Command copies and pastes there; neither ever reaches the device.
+        return;
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.write_all(b"ready\r\n").unwrap();
+        let mut buf = [0u8; 256];
+        while let Ok(n) = stream.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            tx.send(buf[..n].to_vec()).unwrap();
+        }
+    });
+    let mut app = App::new(location());
+    app.quick_open(&format!("raw://127.0.0.1:{port}"));
+    let mut h = harness(app);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !h.state().focused_screen_contains("ready") {
+        assert!(std::time::Instant::now() < deadline, "never connected");
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    h.step();
+    // Ctrl as egui-winit reports it off macOS: also the command key.
+    let ctrl = egui::Modifiers::CTRL | egui::Modifiers::COMMAND;
+    // A fast Ctrl+Insert: the copy and the release of Insert land in one frame.
+    let input = h.input_mut();
+    input.events.push(egui::Event::ModifiersChanged(ctrl));
+    input.events.push(egui::Event::Copy);
+    input.events.push(egui::Event::Key {
+        key: egui::Key::Insert,
+        physical_key: Some(egui::Key::Insert),
+        pressed: false,
+        repeat: false,
+        modifiers: ctrl,
+    });
+    h.step();
+    // Ctrl+V with only a picture on the clipboard.
+    let input = h.input_mut();
+    input.events.push(egui::Event::ModifiersChanged(ctrl));
+    input
+        .events
+        .push(egui::Event::PasteImage(std::sync::Arc::new(
+            egui::ColorImage::filled([1, 1], egui::Color32::BLACK),
+        )));
+    h.step();
+    h.input_mut()
+        .events
+        .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.step();
+    h.event(egui::Event::Text("x".into()));
+    h.step();
+    let mut seen = Vec::new();
+    while !seen.ends_with(b"x") {
+        seen.extend(
+            rx.recv_timeout(std::time::Duration::from_secs(20))
+                .expect("peer got input"),
+        );
+    }
+    assert_eq!(seen, [0x16, b'x'], "{:?}", String::from_utf8_lossy(&seen));
+}
