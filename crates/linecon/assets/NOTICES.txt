@@ -538,6 +538,7 @@ concurrent-queue 2.5.0 (Apache-2.0 OR MIT)
 curve25519-dalek-derive 0.1.1 (MIT/Apache-2.0)
 displaydoc 0.2.6 (MIT OR Apache-2.0)
 endi 1.1.1 (MIT)
+enumn 0.1.14 (MIT OR Apache-2.0)
 event-listener 5.4.2 (Apache-2.0 OR MIT)
 event-listener-strategy 0.5.4 (Apache-2.0 OR MIT)
 fastrand 2.5.0 (Apache-2.0 OR MIT)
@@ -586,6 +587,7 @@ thiserror 1.0.69 (MIT OR Apache-2.0)
 thiserror 2.0.21 (MIT OR Apache-2.0)
 thiserror-impl 1.0.69 (MIT OR Apache-2.0)
 thiserror-impl 2.0.21 (MIT OR Apache-2.0)
+typeid 1.0.3 (MIT OR Apache-2.0)
 unicode-ident 1.0.27 ((MIT OR Apache-2.0) AND Unicode-3.0)
 utf8-zero 0.8.1 (MIT OR Apache-2.0)
 wasi 0.11.1+wasi-snapshot-preview1 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT)
@@ -1018,6 +1020,7 @@ rayon-core 1.13.0 (MIT OR Apache-2.0)
 regex-automata 0.4.18 (MIT OR Apache-2.0)
 regex-syntax 0.8.11 (MIT OR Apache-2.0)
 renderdoc-sys 1.1.0 (MIT OR Apache-2.0)
+ron 0.12.3 (MIT OR Apache-2.0)
 roxmltree 0.20.0 (MIT OR Apache-2.0)
 rustc-hash 1.1.0 (Apache-2.0/MIT)
 rustc_version 0.4.1 (MIT OR Apache-2.0)
@@ -1581,6 +1584,7 @@ limitations under the License.
 allocator-api2 0.2.21 (MIT OR Apache-2.0)
 anyhow 1.0.104 (MIT OR Apache-2.0)
 async-trait 0.1.92 (MIT OR Apache-2.0)
+enumn 0.1.14 (MIT OR Apache-2.0)
 glifo 0.3.0 (Apache-2.0 OR MIT)
 itoa 1.0.18 (MIT OR Apache-2.0)
 libc 0.2.191 (MIT OR Apache-2.0)
@@ -1603,6 +1607,7 @@ thiserror 1.0.69 (MIT OR Apache-2.0)
 thiserror 2.0.21 (MIT OR Apache-2.0)
 thiserror-impl 1.0.69 (MIT OR Apache-2.0)
 thiserror-impl 2.0.21 (MIT OR Apache-2.0)
+typeid 1.0.3 (MIT OR Apache-2.0)
 unicode-ident 1.0.27 ((MIT OR Apache-2.0) AND Unicode-3.0)
 utf8-zero 0.8.1 (MIT OR Apache-2.0)
 vte 0.15.0 (Apache-2.0 OR MIT)
@@ -13608,6 +13613,35 @@ SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
 WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
 OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+========================================================================
+ron 0.12.3 (MIT OR Apache-2.0)
+
+Copyright (c) 2017 RON developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
 
 ========================================================================
 roxmltree 0.20.0 (MIT OR Apache-2.0)

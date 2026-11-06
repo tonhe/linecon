@@ -3039,3 +3039,187 @@ fn opening_from_the_session_manager_closes_it_and_shows_the_session() {
     assert!(!h.state().manager_open_for_test(), "still open");
     assert_eq!(h.state().tab_count_for_test(), 2);
 }
+
+#[test]
+fn the_window_comes_back_as_it_was_left_without_connecting() {
+    let place = location();
+    let (sw1, sw2);
+    {
+        let mut app = App::new(place.clone());
+        let lab = app.config.add_folder(None, "Lab").unwrap();
+        sw1 = app
+            .config
+            .add_session(Some(lab), "lab-sw1", target("127.0.0.1"))
+            .unwrap();
+        sw2 = app
+            .config
+            .add_session(Some(lab), "lab-sw2", target("127.0.0.1"))
+            .unwrap();
+        app.mark_dirty_for_test();
+        app.open_saved_for_test(sw1);
+        app.open_saved_for_test(sw2);
+        app.open_saved_for_test(sw1);
+        app.selected_node_for_test(sw2);
+        app.hide_sidebar_for_test();
+        app.save_before_exit();
+    }
+    let app = App::new(place);
+    assert_eq!(app.tab_count_for_test(), 0, "nothing reconnects on its own");
+    assert_eq!(app.selected_for_test(), Some(sw2));
+    assert!(!app.sidebar_open_for_test());
+    let mut h = harness(app);
+    h.run();
+    h.get_by_label("Open lab-sw1 and lab-sw2 again").click();
+    h.run();
+    h.run();
+    assert_eq!(h.state().tab_count_for_test(), 2, "one tab per session");
+    assert!(
+        h.query_by_label("Open lab-sw1 and lab-sw2 again").is_none(),
+        "the offer goes once taken up"
+    );
+}
+
+#[test]
+fn a_damaged_window_state_is_ignored() {
+    let place = location();
+    std::fs::create_dir_all(&place.dir).unwrap();
+    std::fs::write(place.dir.join("window-state.json"), b"{ not json").unwrap();
+    let app = App::new(place);
+    assert!(app.sidebar_open_for_test());
+    assert_eq!(app.tab_count_for_test(), 0);
+}
+
+#[test]
+fn a_tabs_close_button_closes_all_of_its_splits() {
+    let mut s = sample();
+    s.app
+        .add_demo_tab("core-sw1", Some(s.core_sw), SHOW_VERSION);
+    s.app.split_demo(TOP);
+    s.app.add_demo_tab("edge-rtr1", None, TOP);
+    s.app.set_active_tab_for_test(0);
+    assert_eq!(s.app.pane_count(), 3);
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    h.get_all_by_label("×")
+        .next()
+        .expect("a close button")
+        .click();
+    h.run_steps(3);
+    assert_eq!(h.state().tab_count(), 1);
+    assert_eq!(
+        h.state().pane_count(),
+        1,
+        "both halves of the split are gone"
+    );
+    assert_eq!(h.state().tab_title_for_test().as_deref(), Some("edge-rtr1"));
+}
+
+#[test]
+fn a_split_inside_a_split_can_be_dragged_on_its_own() {
+    let mut s = sample();
+    s.app
+        .add_demo_tab("core-sw1", Some(s.core_sw), SHOW_VERSION);
+    // Both split side by side from the same pane, so they start at the same corner.
+    s.app.split_demo(TOP);
+    s.app.split_demo(TOP);
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    // Each pass adds its dividers; the last pass's two are what is on screen.
+    let handles = |h: &Harness<'_, App>| {
+        let all = h.ctx.data_mut(|d| {
+            std::mem::take(
+                d.get_temp_mut_or_default::<Vec<egui::Rect>>(egui::Id::unique("split-handles")),
+            )
+        });
+        all[all.len().saturating_sub(2)..].to_vec()
+    };
+    h.run();
+    let found = handles(&h);
+    assert_eq!(found.len(), 2, "{found:?}");
+    let (inner, outer) = if found[0].center().x < found[1].center().x {
+        (found[0], found[1])
+    } else {
+        (found[1], found[0])
+    };
+    let from = inner.center();
+    h.drag_at(from);
+    h.run();
+    h.hover_at(from - egui::vec2(60.0, 0.0));
+    h.run();
+    h.drop_at(from - egui::vec2(60.0, 0.0));
+    h.run();
+    handles(&h);
+    h.run();
+    let after = handles(&h);
+    let moved = after
+        .iter()
+        .any(|r| (r.center().x - (from.x - 60.0)).abs() < 2.0);
+    assert!(moved, "the inner divider did not follow: {after:?}");
+    assert!(
+        after
+            .iter()
+            .any(|r| (r.center().x - outer.center().x).abs() < 0.5),
+        "the outer divider moved too: {after:?}"
+    );
+}
+
+#[test]
+fn alt_and_a_letter_reaches_the_peer_once() {
+    use std::io::{Read, Write};
+    if cfg!(target_os = "macos") {
+        // Option types characters there, and is not sent as Escape.
+        return;
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.write_all(b"ready\r\n").unwrap();
+        let mut buf = [0u8; 256];
+        while let Ok(n) = stream.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            tx.send(buf[..n].to_vec()).unwrap();
+        }
+    });
+    let mut app = App::new(location());
+    app.quick_open(&format!("raw://127.0.0.1:{port}"));
+    let mut h = harness(app);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !h.state().focused_screen_contains("ready") {
+        assert!(std::time::Instant::now() < deadline, "never connected");
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    h.step();
+    // What egui-winit hands over for Alt+B: the key, then the letter as text.
+    h.event(egui::Event::Key {
+        key: egui::Key::B,
+        physical_key: Some(egui::Key::B),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::ALT,
+    });
+    h.event(egui::Event::Text("b".into()));
+    h.event(egui::Event::Text("x".into()));
+    h.step();
+    let mut seen = Vec::new();
+    while seen.len() < 3 {
+        seen.extend(
+            rx.recv_timeout(std::time::Duration::from_secs(20))
+                .expect("peer got input"),
+        );
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    while let Ok(more) = rx.try_recv() {
+        seen.extend(more);
+    }
+    assert_eq!(
+        seen,
+        [0x1b, b'b', b'x'],
+        "{:?}",
+        String::from_utf8_lossy(&seen)
+    );
+}

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egui::{ViewportCommand, ViewportId, ViewportInfo};
+use egui_winit::{WindowGeometry, WindowSettings};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
@@ -41,12 +42,64 @@ struct Runner {
     smoke: Option<Smoke>,
     frames: u32,
     error: Option<String>,
+    /// Where the window's size and place are kept between runs.
+    place_file: Option<std::path::PathBuf>,
+    placed: Option<WindowSettings>,
+    /// Size and place before maximizing, to come back to.
+    last_normal: Option<WindowGeometry>,
+}
+
+/// The largest monitor in points, so a saved size never asks for more than there is.
+fn largest_monitor(event_loop: &ActiveEventLoop) -> Option<egui::Vec2> {
+    event_loop
+        .available_monitors()
+        .map(|m| {
+            let size = m.size().to_logical::<f32>(m.scale_factor());
+            egui::vec2(size.width, size.height)
+        })
+        .reduce(|a, b| a.max(b))
+}
+
+fn load_place(file: &std::path::Path) -> Option<WindowSettings> {
+    serde_json::from_slice(&std::fs::read(file).ok()?).ok()
 }
 
 impl Runner {
+    fn remember_place(&self) {
+        let (Some(file), Some(open)) = (&self.place_file, &self.open) else {
+            return;
+        };
+        let settings =
+            WindowSettings::from_window(self.ctx.zoom_factor(), &open.window, self.last_normal);
+        if let Ok(text) = serde_json::to_vec(&settings) {
+            if let Some(dir) = file.parent() {
+                let _ = linecon_engine::private_files::create_dir(dir);
+            }
+            let tmp = file.with_extension("json.tmp");
+            if std::fs::write(&tmp, text).is_ok() {
+                let _ = std::fs::rename(tmp, file);
+            }
+        }
+    }
+
     fn open_window(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
-        let window = egui_winit::create_window(&self.ctx, event_loop, &self.builder)
+        let zoom = self.ctx.zoom_factor();
+        let mut builder = self.builder.clone();
+        self.placed = self.place_file.as_deref().and_then(load_place);
+        if let Some(placed) = &mut self.placed {
+            if let Some(largest) = largest_monitor(event_loop) {
+                placed.clamp_size_to_sane_values(largest);
+            }
+            // A monitor that was unplugged since would leave the window out of sight.
+            placed.clamp_position_to_monitors(zoom, event_loop);
+            builder = placed.initialize_viewport_builder(zoom, builder);
+        }
+        let window = egui_winit::create_window(&self.ctx, event_loop, &builder)
             .map_err(|e| e.to_string())?;
+        if let Some(placed) = &self.placed {
+            placed.initialize_window(&window);
+            self.last_normal = Some(placed.normal_geometry());
+        }
         let window = Arc::new(window);
         let context = softbuffer::Context::new(window.clone()).map_err(|e| e.to_string())?;
         let surface =
@@ -61,7 +114,13 @@ impl Runner {
         );
         let mut info = ViewportInfo::default();
         egui_winit::update_viewport_info(&mut info, &self.ctx, &window, true);
+        if let Some(placed) = &self.placed {
+            placed.before_first_show(&window);
+        }
         window.set_visible(true);
+        if let Some(placed) = &self.placed {
+            placed.after_first_show(&window);
+        }
         window.request_redraw();
         self.open = Some(Open {
             window,
@@ -218,7 +277,22 @@ impl ApplicationHandler<Duration> for Runner {
                 self.next_frame = None;
                 self.frame(event_loop);
             }
-            WindowEvent::CloseRequested | WindowEvent::Destroyed => event_loop.exit(),
+            WindowEvent::CloseRequested | WindowEvent::Destroyed => {
+                self.remember_place();
+                event_loop.exit();
+            }
+            WindowEvent::Moved(_) | WindowEvent::Resized(_)
+                if !open.window.is_maximized() && open.window.fullscreen().is_none() =>
+            {
+                self.last_normal = Some(WindowGeometry::from_window(
+                    self.ctx.zoom_factor(),
+                    &open.window,
+                ));
+                if let WindowEvent::Resized(_) = event {
+                    open.window.request_redraw();
+                }
+                let _ = open.state.on_window_event(&open.window, &event);
+            }
             other => {
                 if open.state.on_window_event(&open.window, &other).repaint {
                     open.window.request_redraw();
@@ -245,6 +319,7 @@ pub fn run(
     mut app: App,
     builder: egui::ViewportBuilder,
     smoke: Option<Smoke>,
+    place_file: Option<std::path::PathBuf>,
 ) -> Result<(), String> {
     let event_loop = EventLoop::<Duration>::with_user_event()
         .build()
@@ -272,6 +347,9 @@ pub fn run(
         smoke,
         frames: 0,
         error: None,
+        place_file,
+        placed: None,
+        last_normal: None,
     };
     event_loop.run_app(&mut runner).map_err(|e| e.to_string())?;
     runner.app.save_before_exit();

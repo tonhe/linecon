@@ -45,13 +45,23 @@ impl App {
                 };
                 let a = self.draw_layout(ui, a, first, chrome);
                 let b = self.draw_layout(ui, b, second, chrome);
+                // The area the split divides is its own: a split nested inside it gets a
+                // smaller one, even when both start at the same corner.
                 let id = ui.scope_id().with((
                     "split",
-                    first.min.x as i32,
-                    first.min.y as i32,
+                    rect.min.x as i32,
+                    rect.min.y as i32,
+                    rect.max.x as i32,
+                    rect.max.y as i32,
                     *vertical,
                 ));
                 let response = ui.interact(handle, id, Sense::drag());
+                if cfg!(test) {
+                    ui.data_mut(|d| {
+                        d.get_temp_mut_or_default::<Vec<Rect>>(egui::Id::unique("split-handles"))
+                            .push(handle)
+                    });
+                }
                 if response.hovered() || response.dragged() {
                     ui.ctx().set_cursor_icon(if *vertical {
                         egui::CursorIcon::ResizeVertical
@@ -317,10 +327,10 @@ impl App {
                     .on_hover_text("Close this tab")
                     .clicked()
                 {
-                    close = Some(focused);
+                    close = Some(index);
                 }
                 if response.clicked_by(egui::PointerButton::Middle) {
-                    close = Some(focused);
+                    close = Some(index);
                 }
             }
             if self.picking_new_tab {
@@ -343,8 +353,15 @@ impl App {
                 self.open_new_tab_picker();
             }
         });
-        if let Some(id) = close {
-            self.close_pane(id);
+        // The whole tab, splits and all: closing one pane of it is a different command.
+        if let Some(index) = close {
+            let mut panes = Vec::new();
+            if let Some(tab) = self.tabs.get(index) {
+                tab.layout.panes(&mut panes);
+            }
+            for id in panes {
+                self.close_pane(id);
+            }
         }
     }
 
@@ -401,6 +418,17 @@ impl App {
                 chrome.muted,
             );
             y += 22.0;
+        }
+        // Sessions from last time connect only when asked to.
+        if let Some(text) = self.reopen_offer_text() {
+            let width = (text.len() as f32 * 7.5 + 32.0).min(rect.width() - 32.0);
+            let place = Rect::from_center_size(pos2(center, y + 22.0), vec2(width, 28.0));
+            let button = ui
+                .put(place, egui::Button::new(text))
+                .on_hover_text("Reconnects the saved sessions that were open when linecon0 closed");
+            if button.clicked() {
+                self.reopen_last_sessions();
+            }
         }
     }
 }

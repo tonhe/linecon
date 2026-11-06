@@ -106,6 +106,9 @@ fn run_with_processor(
             file: file.to_path_buf(),
             frames: hold,
         }),
+        smoke
+            .is_none()
+            .then(|| location.dir.join("window-cpu.json")),
     )
 }
 
@@ -132,6 +135,10 @@ fn run_window(smoke: Option<std::path::PathBuf>) -> i32 {
                 ..Default::default()
             },
             viewport: viewport(),
+            // Size and place come back as they were, moved onto a monitor that is still there.
+            // Kept with the settings, so a portable copy remembers its own.
+            persist_window: smoke.is_none(),
+            persistence_path: Some(location.dir.join("window.ron")),
             ..Default::default()
         };
         let location = location.clone();

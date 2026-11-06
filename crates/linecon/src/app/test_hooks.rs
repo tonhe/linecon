@@ -167,6 +167,22 @@ impl App {
         self.selected_node = Some(id);
     }
 
+    pub fn open_saved_for_test(&mut self, id: Id) {
+        self.open_saved(id);
+    }
+
+    pub fn selected_for_test(&self) -> Option<Id> {
+        self.selected_node
+    }
+
+    pub fn sidebar_open_for_test(&self) -> bool {
+        self.sidebar_open
+    }
+
+    pub fn hide_sidebar_for_test(&mut self) {
+        self.sidebar_open = false;
+    }
+
     pub fn tab_count_for_test(&self) -> usize {
         self.tabs.len()
     }

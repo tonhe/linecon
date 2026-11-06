@@ -44,6 +44,7 @@ mod manager;
 mod menus;
 mod overlays;
 mod panes;
+mod remembered;
 mod sidebar;
 #[cfg(test)]
 mod test_hooks;
@@ -252,6 +253,10 @@ pub struct App {
     panes: HashMap<PaneId, PaneEntry>,
     next_pane: PaneId,
     sidebar_open: bool,
+    /// Saved sessions open last time, offered on the empty window until taken up.
+    reopen_offer: Vec<Id>,
+    /// Those still to open, after the offer was taken.
+    reopening: Vec<Id>,
     quick_connect: String,
     palette: Option<(String, usize)>,
     /// The palette is only finding connections, not commands.
@@ -500,7 +505,7 @@ impl App {
         )));
         let mut themes = themes::builtin();
         themes.extend(themes::load_dir(&location.themes_dir()));
-        Self {
+        let mut app = Self {
             config,
             location,
             config_error,
@@ -524,6 +529,8 @@ impl App {
             panes: HashMap::new(),
             next_pane: 1,
             sidebar_open: true,
+            reopen_offer: Vec::new(),
+            reopening: Vec::new(),
             quick_connect: String::new(),
             palette: None,
             palette_connections_only: false,
@@ -563,7 +570,10 @@ impl App {
             agent_server: None,
             unlock: None,
             password_drafts: HashMap::new(),
-        }
+        };
+        let remembered = remembered::load(&app.location);
+        app.restore_remembered(remembered);
+        app
     }
 
     /// Saves shortly after a change, so typing in a field is not a disk write per key.
@@ -1063,6 +1073,7 @@ impl App {
 
     pub fn save_before_exit(&mut self) {
         self.save_if_needed();
+        self.save_remembered();
     }
 
     /// Draws everything. Separate from the eframe trait so tests can drive it.
@@ -1104,6 +1115,10 @@ impl App {
 
         self.handle_shortcuts(&ctx);
         self.import_dropped_themes(&ctx);
+        self.continue_reopening();
+        if !self.tabs.is_empty() {
+            self.reopen_offer.clear();
+        }
         for entry in self.panes.values_mut() {
             entry.pane.tick_reconnect();
             if entry.pane.reconnect_at.is_some() {
@@ -1269,7 +1284,13 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.save_if_needed();
+        self.save_before_exit();
+    }
+
+    // Only the window's place is kept, by eframe. Widget state from a past run, such as
+    // where the session manager was, has no business coming back.
+    fn persist_egui_memory(&self) -> bool {
+        false
     }
 }
 
