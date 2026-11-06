@@ -108,6 +108,8 @@ impl Runner {
             placed.clamp_position_to_monitors(zoom, event_loop);
             builder = placed.initialize_viewport_builder(zoom, builder);
         }
+        // Hidden until set up: screen reader support has to attach before it first shows.
+        let builder = builder.with_visible(false);
         let window = egui_winit::create_window(&self.ctx, event_loop, &builder)
             .map_err(|e| e.to_string())?;
         if let Some(placed) = &self.placed {
