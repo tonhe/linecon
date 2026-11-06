@@ -2,6 +2,7 @@
 # PuTTY lives in vendor/putty as published, unmodified, at the commit in vendor/PUTTY_COMMIT.
 #
 #   packaging/putty.sh check            the files are exactly upstream's at that commit
+#   packaging/putty.sh status           upstream's newest release, and whether we have it
 #   packaging/putty.sh update <commit>  replace them with another upstream commit
 #
 # Only these touch PuTTY's server. Building never does, so its being down cannot stop a release.
@@ -16,7 +17,7 @@ fetch() {
   # The server serves whole branches, not single commits.
   # It also drops connections now and then.
   for attempt in 1 2 3 4 5; do
-    git -C "$work/upstream" fetch -q "$UPSTREAM" main && break
+    git -C "$work/upstream" fetch -q "$UPSTREAM" main "+refs/tags/*:refs/tags/*" && break
     [ "$attempt" = 5 ] && return 1
     sleep $((attempt * 10))
   done
@@ -45,6 +46,23 @@ case "${1:-}" in
     fi
     echo "vendor/putty is upstream $commit, unmodified"
     ;;
+  status)
+    # Releases are tagged like 0.83. Security fixes arrive in them first, so a release that
+    # is not in the vendored commit is the thing to act on.
+    commit=$(cat vendor/PUTTY_COMMIT)
+    fetch "$commit"
+    latest=$(git -C "$work/upstream" tag -l '[0-9]*.[0-9]*' | grep -E '^[0-9]+\.[0-9]+$' |
+      sort -V | tail -1)
+    behind=$(git -C "$work/upstream" rev-list --count "$commit..FETCH_HEAD")
+    echo "vendored: $commit ($behind commits behind upstream main)"
+    echo "latest release: $latest"
+    if git -C "$work/upstream" merge-base --is-ancestor "$latest" "$commit"; then
+      echo "release $latest is included"
+    else
+      echo "NEW RELEASE: $latest is not in the vendored commit"
+      exit 3
+    fi
+    ;;
   update)
     commit=${2:?usage: packaging/putty.sh update <commit>}
     fetch "$commit"
@@ -56,7 +74,7 @@ case "${1:-}" in
     echo "vendor/putty is now upstream $commit. Run the tests and the lab before committing."
     ;;
   *)
-    sed -n '2,7p' "$0"
+    sed -n '2,8p' "$0"
     exit 2
     ;;
 esac

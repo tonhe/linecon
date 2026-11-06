@@ -21,3 +21,34 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: packaging/putty.sh check
+
+  # Security fixes reach PuTTY's releases first. A release that is not vendored yet opens an
+  # issue, once.
+  new-release:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Compare with upstream's newest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          report=$(packaging/putty.sh status)
+          status=$?
+          set -e
+          echo "$report"
+          if [ "$status" = 3 ]; then
+            release=$(echo "$report" | sed -n 's/^latest release: //p')
+            title="PuTTY $release is out"
+            if [ -z "$(gh issue list --state open --search "\"$title\" in:title" --json number -q '.[].number')" ]; then
+              gh issue create --title "$title" --label enhancement --body "$(printf '%s\n\n%s\n' \
+                "Upstream tagged $release, and vendor/putty does not include it yet. Releases are where security fixes land first." \
+                "Update with \`packaging/putty.sh update $release\`, then run the tests and the device lab before tagging.")"
+            fi
+          elif [ "$status" != 0 ]; then
+            exit "$status"
+          fi

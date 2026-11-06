@@ -132,3 +132,6 @@ Needs Rust, CMake and a C compiler. Tests use Docker for the legacy SSH server w
 MIT. See [LICENSE](LICENSE). PuTTY is MIT licensed by Simon Tatham and contributors, and JetBrains Mono and Inter are
 under the SIL Open Font License. `linecon --licenses` prints every notice the program carries, including its
 dependencies'. linecon0 is built from PuTTY's main branch at the commit `linecon --version` shows, not a tagged release.
+That commit always includes PuTTY's newest release (0.85 today): releases are where security fixes land first, and a
+weekly check opens an issue when a new one is out. PuTTY sits unmodified in `vendor/putty`, and CI proves it matches
+upstream.
