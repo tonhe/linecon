@@ -171,6 +171,10 @@ impl App {
         self.open_saved(id);
     }
 
+    pub fn agent_log_for_test(&self) -> std::path::PathBuf {
+        self.agent_log_file()
+    }
+
     pub fn renaming_for_test(&self) -> bool {
         self.renaming.is_some()
     }

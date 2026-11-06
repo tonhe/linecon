@@ -3408,3 +3408,69 @@ fn several_sessions_move_and_delete_together() {
     }
     assert!(config.find(sw2).is_some(), "outside the range");
 }
+
+#[test]
+fn a_proposal_can_be_changed_before_it_is_sent_and_every_call_is_logged() {
+    use serde_json::json;
+    let (mut h, host, id) = live_agent_pane();
+    agent_call(
+        host.as_ref(),
+        "send_text",
+        json!({ "session": id, "text": "reload\n" }),
+    );
+    agent_call(host.as_ref(), "read_screen", json!({ "session": id }));
+    h.run_steps(3);
+    h.get_by_label("Edit text").click();
+    h.run_steps(2);
+    let field = h.get_by_role(egui::accesskit::Role::MultilineTextInput);
+    field.focus();
+    h.run_steps(1);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput)
+        .type_text("show clock\n");
+    h.run_steps(2);
+    // Typing in the field must not approve it.
+    assert_eq!(
+        agent_call(host.as_ref(), "get_proposal", json!({ "proposal": 1 })).1,
+        "pending"
+    );
+    h.get_by_label("Send edited").click();
+    h.run_steps(3);
+    assert_eq!(
+        agent_call(host.as_ref(), "get_proposal", json!({ "proposal": 1 })).1,
+        "sent_edited"
+    );
+
+    let log = std::fs::read_to_string(h.state().agent_log_for_test()).unwrap();
+    let entries: Vec<serde_json::Value> = log
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let events: Vec<&str> = entries
+        .iter()
+        .map(|e| e["event"].as_str().unwrap())
+        .collect();
+    for wanted in [
+        "access_on",
+        "list_sessions",
+        "propose",
+        "read_screen",
+        "answer",
+    ] {
+        assert!(events.contains(&wanted), "{wanted} missing from {events:?}");
+    }
+    let answer = entries.iter().find(|e| e["event"] == "answer").unwrap();
+    assert_eq!(answer["answer"], "sent_edited");
+    assert_eq!(answer["text"], "show clock\n");
+    let proposed = entries.iter().find(|e| e["event"] == "propose").unwrap();
+    assert_eq!(proposed["text"], "reload\n");
+    assert!(entries.iter().all(|e| e["time"].is_string()));
+    // What the agent read is not copied into the log, only that it read.
+    let read = entries
+        .iter()
+        .find(|e| e["event"] == "read_screen")
+        .unwrap();
+    assert_eq!(read["session"], id);
+    assert!(read.get("text").is_none(), "{read}");
+}

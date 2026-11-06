@@ -38,9 +38,53 @@ pub(super) struct AgentView {
     pub(super) input: Mutex<Vec<(u64, Vec<u8>)>>,
     pub(super) proposals: Mutex<Proposals>,
     pub(super) wake: Mutex<Option<Box<dyn Fn() + Send>>>,
+    /// Every call an agent makes, reads included, one JSON object per line. Only added to.
+    pub(super) log: Mutex<Option<std::fs::File>>,
+}
+
+/// Past this the log starts over, keeping the previous one beside it.
+const MAX_LOG: u64 = 10 * 1024 * 1024;
+
+/// Opens the agent log for adding to. Screens an agent reads are not copied into it, only
+/// that it read them: they can hold anything.
+pub(super) fn open_log(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > MAX_LOG) {
+        let _ = std::fs::rename(path, path.with_extension("1.jsonl"));
+    }
+    if let Some(dir) = path.parent() {
+        linecon_engine::private_files::create_dir(dir)?;
+    }
+    linecon_engine::private_files::append(path)
 }
 
 impl AgentView {
+    pub(super) fn record(&self, mut entry: serde_json::Value) {
+        let mut log = self.log.lock().unwrap();
+        let Some(file) = log.as_mut() else {
+            return;
+        };
+        let time = crate::session_log::now()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default();
+        entry["time"] = serde_json::Value::String(time);
+        let mut line = entry.to_string();
+        line.push('\n');
+        if std::io::Write::write_all(file, line.as_bytes()).is_err() {
+            // A log that cannot be written stops, rather than failing every call.
+            *log = None;
+        }
+    }
+
+    fn pane_name(&self, id: u64) -> String {
+        self.panes
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|p| p.info.id == id)
+            .map(|p| p.info.name.clone())
+            .unwrap_or_default()
+    }
+
     pub(super) fn update(&self, panes: Vec<AgentPane>) {
         *self.panes.lock().unwrap() = panes;
     }
@@ -52,11 +96,19 @@ impl AgentView {
     /// Ends proposals that have waited too long, or whose pane has gone or disconnected.
     pub(super) fn expire_proposals(&self, open: impl Fn(u64) -> bool) {
         let mut proposals = self.proposals.lock().unwrap();
+        let mut expired = Vec::new();
         for proposal in &mut proposals.list {
             let stale = proposal.asked.elapsed() > PROPOSAL_LIFETIME || !open(proposal.pane);
             if proposal.status == "pending" && stale {
                 proposal.status = "expired";
+                expired.push(proposal.id);
             }
+        }
+        drop(proposals);
+        for id in expired {
+            self.record(
+                serde_json::json!({ "event": "answer", "proposal": id, "answer": "expired" }),
+            );
         }
     }
 
@@ -69,16 +121,25 @@ impl AgentView {
             .cloned()
     }
 
-    pub(super) fn resolve_proposal(&self, id: u64, status: &'static str) {
+    /// Settles a proposal. `sent` is the text that went to the device, when the person
+    /// changed it first.
+    pub(super) fn resolve_proposal(&self, id: u64, status: &'static str, sent: Option<&str>) {
         let mut proposals = self.proposals.lock().unwrap();
         if let Some(proposal) = proposals.list.iter_mut().find(|p| p.id == id) {
             proposal.status = status;
         }
+        drop(proposals);
+        let mut entry = serde_json::json!({ "event": "answer", "proposal": id, "answer": status });
+        if let Some(text) = sent {
+            entry["text"] = serde_json::Value::String(text.to_string());
+        }
+        self.record(entry);
     }
 }
 
 impl Host for AgentView {
     fn panes(&self) -> Vec<PaneInfo> {
+        self.record(serde_json::json!({ "event": "list_sessions" }));
         self.panes
             .lock()
             .unwrap()
@@ -88,6 +149,12 @@ impl Host for AgentView {
     }
 
     fn read_screen(&self, id: u64, scrollback: usize) -> Option<String> {
+        self.record(serde_json::json!({
+            "event": "read_screen",
+            "session": id,
+            "name": self.pane_name(id),
+            "scrollback": scrollback,
+        }));
         let panes = self.panes.lock().unwrap();
         let pane = panes.iter().find(|p| p.info.id == id)?;
         let core = pane.shared.core.lock().unwrap();
@@ -95,6 +162,12 @@ impl Host for AgentView {
     }
 
     fn queue_input(&self, id: u64, data: Vec<u8>) {
+        self.record(serde_json::json!({
+            "event": "send_text",
+            "session": id,
+            "name": self.pane_name(id),
+            "text": String::from_utf8_lossy(&data),
+        }));
         self.input.lock().unwrap().push((id, data));
         if let Some(wake) = self.wake.lock().unwrap().as_ref() {
             wake();
@@ -102,14 +175,8 @@ impl Host for AgentView {
     }
 
     fn propose_input(&self, id: u64, text: String) -> Result<u64, String> {
-        let pane_name = self
-            .panes
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|p| p.info.id == id)
-            .map(|p| p.info.name.clone())
-            .unwrap_or_default();
+        let pane_name = self.pane_name(id);
+        let text_for_log = text.clone();
         let proposal = {
             let mut proposals = self.proposals.lock().unwrap();
             let waiting = proposals
@@ -118,6 +185,13 @@ impl Host for AgentView {
                 .filter(|p| p.pane == id && p.status == "pending")
                 .count();
             if waiting >= MAX_PENDING_PROPOSALS {
+                drop(proposals);
+                self.record(serde_json::json!({
+                    "event": "propose",
+                    "session": id,
+                    "text": text_for_log,
+                    "refused": "too many waiting",
+                }));
                 return Err("Too many proposals are waiting for the user already.".to_string());
             }
             proposals.next += 1;
@@ -135,6 +209,13 @@ impl Host for AgentView {
             }
             proposal
         };
+        self.record(serde_json::json!({
+            "event": "propose",
+            "session": id,
+            "name": self.pane_name(id),
+            "text": text_for_log,
+            "proposal": proposal,
+        }));
         if let Some(wake) = self.wake.lock().unwrap().as_ref() {
             wake();
         }
@@ -149,15 +230,36 @@ impl Host for AgentView {
 }
 
 impl App {
+    pub(super) fn agent_log_file(&self) -> std::path::PathBuf {
+        self.location.dir.join("agent-log.jsonl")
+    }
+
     /// Starts or stops the agent server, and shares the current panes with it.
     pub(super) fn sync_agent_server(&mut self, ctx: &egui::Context) {
         if !self.config.mcp_enabled {
-            self.agent_server = None;
-            self.agent_view.update(Vec::new());
-            self.agent_view.expire_proposals(|_| false);
+            if self.agent_server.take().is_some() {
+                self.agent_view.update(Vec::new());
+                self.agent_view.expire_proposals(|_| false);
+                self.agent_view
+                    .record(serde_json::json!({ "event": "access_off" }));
+                *self.agent_view.log.lock().unwrap() = None;
+            }
             return;
         }
         if self.agent_server.is_none() {
+            match open_log(&self.agent_log_file()) {
+                Ok(file) => *self.agent_view.log.lock().unwrap() = Some(file),
+                // Agent access without its record is not offered.
+                Err(e) => {
+                    self.error = Some(format!(
+                        "Could not open the agent log, so agent access stays off: {e}"
+                    ));
+                    self.config.mcp_enabled = false;
+                    return;
+                }
+            }
+            self.agent_view
+                .record(serde_json::json!({ "event": "access_on" }));
             let repaint_ctx = ctx.clone();
             *self.agent_view.wake.lock().unwrap() =
                 Some(Box::new(move || repaint_ctx.request_repaint()));
@@ -217,10 +319,20 @@ impl App {
             return;
         };
         let mut approved = None;
+        // A person can change the text first. What they approve is what is sent.
+        if self
+            .proposal_edit
+            .as_ref()
+            .is_some_and(|(id, _)| *id != proposal.id)
+        {
+            self.proposal_edit = None;
+        }
+        let mut start_edit = false;
+        let mut stop_edit = false;
         let screen = ctx.content_rect();
         egui::Area::new(egui::Id::unique("linecon-agent-proposal"))
             .order(egui::Order::Foreground)
-            .fixed_pos(pos2(screen.center().x - 240.0, screen.bottom() - 260.0))
+            .fixed_pos(pos2(screen.center().x - 240.0, screen.bottom() - 300.0))
             .show(ctx, |ui| {
                 Frame::popup(ui.style())
                     .fill(chrome.raised)
@@ -235,19 +347,40 @@ impl App {
                             .size(15.0),
                         );
                         ui.add_space(4.0);
-                        egui::ScrollArea::vertical()
-                            .max_height(120.0)
-                            .show(ui, |ui| {
-                                ui.label(
-                                    RichText::new(crate::mcp::display_input(&proposal.text))
-                                        .monospace()
-                                        .size(12.0),
-                                );
-                            });
+                        egui::ScrollArea::vertical().max_height(160.0).show(
+                            ui,
+                            |ui| match &mut self.proposal_edit {
+                                Some((_, text)) => {
+                                    ui.add(
+                                        TextEdit::multiline(text)
+                                            .font(egui::TextStyle::Monospace)
+                                            .desired_width(f32::INFINITY)
+                                            .desired_rows(3),
+                                    );
+                                }
+                                None => {
+                                    ui.label(
+                                        RichText::new(crate::mcp::display_input(&proposal.text))
+                                            .monospace()
+                                            .size(12.0),
+                                    );
+                                }
+                            },
+                        );
                         ui.add_space(8.0);
+                        // Buttons only: nothing typed, here or at a device, approves it.
                         ui.horizontal(|ui| {
-                            if ui.button("Approve").clicked() {
+                            let editing = self.proposal_edit.is_some();
+                            let approve = if editing { "Send edited" } else { "Approve" };
+                            if ui.button(approve).clicked() {
                                 approved = Some(true);
+                            }
+                            if editing {
+                                if ui.button("Undo changes").clicked() {
+                                    stop_edit = true;
+                                }
+                            } else if ui.button("Edit text").clicked() {
+                                start_edit = true;
                             }
                             if ui.button("Deny").clicked() {
                                 approved = Some(false);
@@ -255,24 +388,46 @@ impl App {
                         });
                     });
             });
+        if start_edit {
+            self.proposal_edit = Some((proposal.id, proposal.text.clone()));
+        }
+        if stop_edit {
+            self.proposal_edit = None;
+        }
         match approved {
             Some(true) => {
+                let edited = self
+                    .proposal_edit
+                    .take()
+                    .map(|(_, text)| text)
+                    .filter(|text| *text != proposal.text);
+                let text = edited.as_deref().unwrap_or(&proposal.text);
                 // Checked once more now that it matters.
                 let sent = self.panes.get(&proposal.pane).filter(|e| {
                     matches!(e.agent, Access::Ask | Access::Control)
                         && e.pane.status() == Status::Live
                         && e.pane.shared.pending.lock().unwrap().is_none()
                 });
-                let status = if let Some(entry) = sent {
-                    let data = proposal.text.replace("\r\n", "\r").replace('\n', "\r");
-                    entry.pane.send(data.as_bytes());
-                    "sent"
-                } else {
-                    "expired"
+                let status = match (sent, &edited) {
+                    (Some(entry), _) => {
+                        let data = text.replace("\r\n", "\r").replace('\n', "\r");
+                        entry.pane.send(data.as_bytes());
+                        if edited.is_some() {
+                            "sent_edited"
+                        } else {
+                            "sent"
+                        }
+                    }
+                    (None, _) => "expired",
                 };
-                self.agent_view.resolve_proposal(proposal.id, status);
+                self.agent_view
+                    .resolve_proposal(proposal.id, status, edited.as_deref());
             }
-            Some(false) => self.agent_view.resolve_proposal(proposal.id, "denied"),
+            Some(false) => {
+                self.proposal_edit = None;
+                self.agent_view
+                    .resolve_proposal(proposal.id, "denied", None);
+            }
             None => {}
         }
     }

@@ -66,7 +66,7 @@ pub trait Host: Send + Sync {
     fn queue_input(&self, id: u64, data: Vec<u8>);
     /// Asks a person to approve input. Returns the proposal's id.
     fn propose_input(&self, id: u64, text: String) -> Result<u64, String>;
-    /// `pending`, `sent`, `denied` or `expired`.
+    /// `pending`, `sent`, `sent_edited`, `denied` or `expired`.
     fn proposal_status(&self, proposal: u64) -> Option<&'static str>;
 }
 
@@ -124,7 +124,7 @@ fn tools() -> Value {
         },
         {
             "name": "get_proposal",
-            "description": "Check input proposed with send_text: pending, sent, denied or expired.",
+            "description": "Check input proposed with send_text: pending, sent, sent_edited (the user changed it before sending, so read the screen to see what went), denied or expired.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "proposal": { "type": "integer" } },

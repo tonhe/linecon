@@ -109,8 +109,10 @@ instruct the agent, so everything is opt-in:
 - The server is off until you start it from the command palette.
 - Each pane starts with no access, and you grant it one pane at a time from the palette. No mode is ever saved, and
   agents have no way to change one.
-- Read lets an agent see the pane. Ask also lets it propose input, and you approve or deny each proposal with the mouse.
-  Proposals expire after five minutes or on disconnect.
+- Read lets an agent see the pane. Ask also lets it propose input, and you approve, edit or deny each proposal with the
+  mouse. Proposals expire after five minutes or on disconnect.
+- Every agent call, reads included, is added to `agent-log.jsonl` in the settings folder, one JSON object per line
+  with the time. It records what was proposed, sent and decided, and that a screen was read, never what was on it.
 - Full control lets it type without asking. That lasts until the connection drops, including an automatic reconnect,
   and the pane then goes back to asking.
 - A pane with access is marked on screen, and input is refused while it is waiting on a password.

@@ -16,7 +16,7 @@ pub struct SessionLog {
     at_line_start: bool,
 }
 
-fn now() -> OffsetDateTime {
+pub fn now() -> OffsetDateTime {
     OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc())
 }
 

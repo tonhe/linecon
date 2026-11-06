@@ -306,6 +306,8 @@ pub struct App {
     /// Rows chosen with Ctrl or Shift as well as the selected one. Moving or deleting any of
     /// them takes them all.
     marked: Vec<Id>,
+    /// An agent's proposal being changed before it is approved, and the text so far.
+    proposal_edit: Option<(u64, String)>,
 }
 
 const AUTHOR: &str = "Tony Mattke";
@@ -572,6 +574,7 @@ impl App {
             last_focused_session: None,
             pending_delete: None,
             marked: Vec::new(),
+            proposal_edit: None,
             vault,
             agent_view: Arc::default(),
             agent_server: None,
