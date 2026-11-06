@@ -303,6 +303,9 @@ pub struct App {
     last_focus: Option<egui::Id>,
     last_focused_session: Option<Id>,
     pending_delete: Option<Id>,
+    /// Rows chosen with Ctrl or Shift as well as the selected one. Moving or deleting any of
+    /// them takes them all.
+    marked: Vec<Id>,
 }
 
 const AUTHOR: &str = "Tony Mattke";
@@ -568,6 +571,7 @@ impl App {
             last_focus: None,
             last_focused_session: None,
             pending_delete: None,
+            marked: Vec::new(),
             vault,
             agent_view: Arc::default(),
             agent_server: None,

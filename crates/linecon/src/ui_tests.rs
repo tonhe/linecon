@@ -3297,3 +3297,114 @@ fn unlocking_saved_passwords_keeps_the_window_drawing() {
     h.run_steps(2);
     assert!(h.query_by_label("Unlock saved passwords").is_none());
 }
+
+#[test]
+fn the_session_tree_works_from_the_keyboard() {
+    let s = sample();
+    let core_sw2 = session_named(&s.app, "core-sw2").unwrap();
+    let edge_rtr1 = session_named(&s.app, "edge-rtr1").unwrap();
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    h.get_by_label("core-sw1").click();
+    h.run_steps(2);
+    let press = |h: &mut Harness<'static, App>, key| {
+        h.key_press(key);
+        h.run_steps(3);
+    };
+    let selected = |h: &Harness<'static, App>| {
+        let id = h.state().selected_for_test()?;
+        let name = h.state().config_for_test().find(id)?.name().to_string();
+        Some(name)
+    };
+
+    press(&mut h, egui::Key::ArrowDown);
+    assert_eq!(h.state().selected_for_test(), Some(core_sw2));
+    assert!(has_keyboard(&h, "core-sw2"), "the keyboard follows");
+    press(&mut h, egui::Key::ArrowDown);
+    assert_eq!(selected(&h).as_deref(), Some("Edge"));
+    // Left closes an open folder, then goes up to the one holding it.
+    press(&mut h, egui::Key::ArrowLeft);
+    assert!(
+        h.query_by_label("edge-rtr1").is_none(),
+        "Edge did not close"
+    );
+    press(&mut h, egui::Key::ArrowLeft);
+    assert_eq!(selected(&h).as_deref(), Some("Datacenter"));
+    // Right on Edge opens it, and again steps inside.
+    press(&mut h, egui::Key::End);
+    press(&mut h, egui::Key::Home);
+    assert_eq!(selected(&h).as_deref(), Some("Datacenter"));
+    for _ in 0..4 {
+        press(&mut h, egui::Key::ArrowDown);
+    }
+    assert_eq!(selected(&h).as_deref(), Some("Edge"));
+    press(&mut h, egui::Key::ArrowRight);
+    press(&mut h, egui::Key::ArrowRight);
+    assert_eq!(h.state().selected_for_test(), Some(edge_rtr1));
+    // Enter connects, F2 renames, Delete asks.
+    press(&mut h, egui::Key::F2);
+    assert!(h.state().renaming_for_test());
+    press(&mut h, egui::Key::Escape);
+    h.get_by_label("edge-rtr1").click();
+    h.run_steps(2);
+    press(&mut h, egui::Key::Delete);
+    h.get_by_label("Delete edge-rtr1?");
+    press(&mut h, egui::Key::Escape);
+    assert!(
+        h.state().config_for_test().find(edge_rtr1).is_some(),
+        "Escape keeps it"
+    );
+    h.get_by_label("edge-rtr1").click();
+    h.run_steps(2);
+    press(&mut h, egui::Key::Enter);
+    assert_eq!(h.state().tab_count_for_test(), 1, "Enter connects");
+}
+
+#[test]
+fn several_sessions_move_and_delete_together() {
+    let s = sample();
+    let sw1 = s.core_sw;
+    let sw2 = session_named(&s.app, "core-sw2").unwrap();
+    let rtr = session_named(&s.app, "edge-rtr1").unwrap();
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    let parent_name = |h: &Harness<'static, App>, id| {
+        let path = h.state().config_for_test().ancestors(id)?;
+        Some(path.last()?.name.clone())
+    };
+
+    // Ctrl (Command on a Mac) adds to the selection, and a drag takes both.
+    h.get_by_label("core-sw1").click();
+    h.run_steps(2);
+    h.get_by_label("edge-rtr1")
+        .click_modifiers(egui::Modifiers::COMMAND);
+    h.run_steps(2);
+    let from = h.get_by_label("edge-rtr1").rect().center();
+    let to = h.get_by_label("Branch office").rect().center();
+    h.drag_at(from);
+    h.run();
+    h.hover_at(to);
+    h.run();
+    h.drop_at(to);
+    h.run_steps(3);
+    assert_eq!(parent_name(&h, sw1).as_deref(), Some("Branch office"));
+    assert_eq!(parent_name(&h, rtr).as_deref(), Some("Branch office"));
+    assert_eq!(parent_name(&h, sw2).as_deref(), Some("Core switches"));
+
+    // Shift takes a range, and one question covers it. The two moved here are last.
+    h.get_by_label("br-sw1").click();
+    h.run_steps(2);
+    h.get_by_label("edge-rtr1")
+        .click_modifiers(egui::Modifiers::SHIFT);
+    h.run_steps(2);
+    h.key_press(egui::Key::Delete);
+    h.run_steps(3);
+    h.get_by_label("Delete these 4 sessions?");
+    h.get_by_label("Delete").click();
+    h.run_steps(3);
+    let config = h.state().config_for_test();
+    for gone in [sw1, rtr] {
+        assert!(config.find(gone).is_none());
+    }
+    assert!(config.find(sw2).is_some(), "outside the range");
+}

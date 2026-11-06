@@ -171,6 +171,10 @@ impl App {
         self.open_saved(id);
     }
 
+    pub fn renaming_for_test(&self) -> bool {
+        self.renaming.is_some()
+    }
+
     pub fn selected_for_test(&self) -> Option<Id> {
         self.selected_node
     }
