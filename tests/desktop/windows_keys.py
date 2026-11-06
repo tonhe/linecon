@@ -71,7 +71,6 @@ def main():
         device.check("Enter", keys("{ENTER}"), b"\r")
         device.check("Backspace", keys("{BACKSPACE}"), b"\x7f")
         device.check("Ctrl+C interrupts the device", keys("^c"), b"\x03")
-        device.check("Ctrl+V goes to the device", keys("^v"), b"\x16")
         device.check("Alt+x arrives once, with Escape", keys("%x"), b"\x1bx")
         device.check("arrow up", keys("{UP}"), b"\x1b[A")
         device.check("Delete", keys("{DEL}"), b"\x1b[3~")
@@ -80,6 +79,8 @@ def main():
         device.check("Ctrl+Shift+K opens the finder, not the device", keys("^+k"), b"")
         device.check("Escape closes the finder", keys("{ESC}"), b"")
         set_clipboard("pasted-line")
+        # With text on the clipboard, which is when it could be mistaken for a paste.
+        device.check("Ctrl+V goes to the device", keys("^v"), b"\x16")
         device.check("Shift+Insert pastes", keys("+{INSERT}"), b"pasted-line")
         device.check("Ctrl+Shift+V pastes", keys("^+v"), b"pasted-line")
         if shot:
