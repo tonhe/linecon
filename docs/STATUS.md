@@ -43,7 +43,11 @@
 - Checked with no flags against real IOS XE 17.18.2, Arista cEOS 4.36 and vJunos 26.2, in the CLI and through the
   window's code path. See `tests/lab/README.md`.
 
-- The real window is driven with real input against real devices by `tests/gui`. 16 flows pass on Linux.
+- The real window is driven with real input against real devices by `tests/gui`. 21 flows pass on Linux, on both
+  drawing paths. On Windows and macOS, CI presses real keys in the real window and checks the bytes a device gets
+  (`tests/desktop`).
+
+- Optional highlighting of link states and addresses in device output, per session.
 
 - Updates from GitHub releases: opt-in checks, an Ed25519-signed manifest, a built-in key, and rollback. Tested against
   a local host. The key is in place from v0.0.1-alpha.18, and no real update between two releases has run yet.
@@ -58,20 +62,19 @@
 
 ## Blocked
 - Windows signing: the SignPath Foundation declined for now, wanting more public visibility. See #5.
-- macOS signing waits on Developer ID secrets in the repository. See `docs/macos-signing.md`.
 
 ## Known gaps
-- The window is driven automatically on Linux and has been run on macOS by hand. Windows has only been run headlessly.
+- Dialogs, mouse selection and drag on Windows and macOS are checked by hand; only keys are automated there.
 - OpenSSH private keys are converted once for PuTTY, kept beside the settings. Keys PuTTY cannot import, such as hardware-backed
   ones, still need an agent.
 - PuTTY does not read ~/.ssh/config. Use the import command.
 - Windows and macOS do not run the Docker legacy test, because hosted runners lack a Linux
   container runtime. They run the loopback tests, and the protocol code is shared.
-- Ctrl+V with an empty clipboard sends nothing.
+- On Windows, Ctrl+V with an empty clipboard sends nothing: egui-winit drops the key.
 - The system clipboard on macOS awaits confirmation on a build that has the clipboard fix.
 - OS secret stores are only automatically tested on Windows. Keychain is confirmed by hand on a real Mac: a saved
   login appears under the service `linecon0` in the login keychain. secret-service needs a logged-in desktop session.
-- Pageant and the 1Password agent are untested. A remote forward has no automated test.
+- Pageant and the 1Password agent are untested.
 - Importers are tested against samples written from the formats, not exports from real installs.
 - MCP is tested with its own client code and has not been run against a real MCP client.
 - Saved passwords are not used through a jump host, because the prompt may be the jump host's.
