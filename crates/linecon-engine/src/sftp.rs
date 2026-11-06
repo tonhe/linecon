@@ -188,6 +188,11 @@ impl Sftp {
             .set("RemoteCommand", "sftp")
             .set("Linecon.Subsystem", 1)
             .set("NoPTY", 1);
+        // PuTTY would look the name up on the thread every session shares, and wait there.
+        if let Some((host, port)) = settings.name_to_look_up() {
+            std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), port))
+                .map_err(|e| io::Error::new(e.kind(), format!("could not look up {host}: {e}")))?;
+        }
         let session = Session::open(&settings).map_err(|e| io::Error::other(e.to_string()))?;
         let mut sftp = Self {
             session,

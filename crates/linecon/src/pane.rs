@@ -70,23 +70,6 @@ fn probe_unless_stopped(
     None
 }
 
-/// The name a connection will have to look up, if there is one to do here. Through a jump
-/// host the far end looks it up, and serial lines and addresses need nothing.
-fn name_to_look_up(settings: &Settings) -> Option<(String, u16)> {
-    if settings.get("Protocol") == Some("serial") || settings.get("ProxyHost").is_some() {
-        return None;
-    }
-    let host = settings.get("HostName")?;
-    if host.is_empty() || host.parse::<std::net::IpAddr>().is_ok() {
-        return None;
-    }
-    let port = settings
-        .get("PortNumber")
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(22);
-    Some((host.to_string(), port))
-}
-
 /// Whether to answer this prompt with the saved password. Only once per
 /// connection, so a wrong password falls back to the user instead of locking the
 /// account. Never through a jump host, because the prompt could be the jump
@@ -261,7 +244,7 @@ impl Pane {
         let size = self.shared.core.lock().unwrap().size();
         settings.terminal_size(size.cols as u16, size.rows as u16);
         self.lookup_generation += 1;
-        match name_to_look_up(&settings) {
+        match settings.name_to_look_up() {
             Some((host, port)) => self.look_up_first(host, port, settings),
             None => self.open_session(settings),
         }
@@ -278,7 +261,12 @@ impl Pane {
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
             let result = look_up(&host, port).map_err(|e| format!("could not look up {host}: {e}"));
-            *shared.lookup_done.lock().unwrap() = Some((generation, result));
+            let mut done = shared.lookup_done.lock().unwrap();
+            // A slow lookup from an earlier connect must not replace a newer one's answer.
+            if done.as_ref().is_none_or(|(newest, _)| *newest < generation) {
+                *done = Some((generation, result));
+            }
+            drop(done);
             repaint();
         });
     }
@@ -674,22 +662,6 @@ fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint:
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_names_are_looked_up_here() {
-        let mut settings = Settings::ssh("sw1.example", 2222, "me");
-        assert_eq!(
-            name_to_look_up(&settings),
-            Some(("sw1.example".to_string(), 2222))
-        );
-        settings.set("ProxyHost", "jump");
-        assert_eq!(
-            name_to_look_up(&settings),
-            None,
-            "the jump host looks it up"
-        );
-        assert_eq!(name_to_look_up(&Settings::ssh("10.0.0.1", 22, "me")), None);
-        assert_eq!(name_to_look_up(&Settings::ssh("fe80::1", 22, "me")), None);
-    }
     use linecon_engine::PromptField;
 
     fn prompt(text: &str, echo: bool) -> Prompt {

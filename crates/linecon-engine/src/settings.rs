@@ -208,6 +208,29 @@ impl Settings {
         self
     }
 
+    /// The name PuTTY will look up first for this connection, if there is one. PuTTY does it
+    /// on the thread every session shares, and waits, so callers look it up beforehand. Through
+    /// a jump host that is the jump host's name, because the far end looks the target up.
+    pub fn name_to_look_up(&self) -> Option<(String, u16)> {
+        if self.get("Protocol") == Some("serial") {
+            return None;
+        }
+        let prefix = if self.get("ProxyHost").is_some() {
+            "Jump."
+        } else {
+            ""
+        };
+        let host = self.get(&format!("{prefix}HostName"))?;
+        if host.is_empty() || host.parse::<std::net::IpAddr>().is_ok() {
+            return None;
+        }
+        let port = self
+            .get(&format!("{prefix}PortNumber"))
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(22);
+        Some((host.to_string(), port))
+    }
+
     pub fn algorithms(&mut self, policy: &AlgorithmPolicy) -> &mut Self {
         for (key, value) in policy.to_settings() {
             self.set(key, value);
@@ -252,6 +275,35 @@ mod tests {
         assert_eq!(target.get("Jump.UserName"), Some("ops"));
         assert_eq!(target.get("Jump.PortNumber"), Some("2222"));
         assert_eq!(target.get("Jump.KEX"), Some("dh-group1-sha1"));
+    }
+
+    #[test]
+    fn the_name_looked_up_first_is_the_first_hop() {
+        let mut settings = Settings::ssh("sw1.example", 2222, "me");
+        assert_eq!(
+            settings.name_to_look_up(),
+            Some(("sw1.example".to_string(), 2222))
+        );
+        settings.via_jump_host(
+            &JumpHost::parse("ops@bastion.example:2200").unwrap(),
+            &Settings::ssh("ignored", 1, "me"),
+        );
+        assert_eq!(
+            settings.name_to_look_up(),
+            Some(("bastion.example".to_string(), 2200)),
+            "the jump host is looked up here, and it looks up the target"
+        );
+        let mut by_address = Settings::ssh("sw1.example", 22, "me");
+        by_address.via_jump_host(
+            &JumpHost::parse("10.0.0.9").unwrap(),
+            &Settings::ssh("ignored", 1, "me"),
+        );
+        assert_eq!(by_address.name_to_look_up(), None);
+        assert_eq!(Settings::ssh("10.0.0.1", 22, "me").name_to_look_up(), None);
+        assert_eq!(Settings::ssh("fe80::1", 22, "me").name_to_look_up(), None);
+        let mut serial = Settings::ssh("sw1.example", 22, "me");
+        serial.set("Protocol", "serial");
+        assert_eq!(serial.name_to_look_up(), None);
     }
 
     #[test]

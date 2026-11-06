@@ -2105,6 +2105,74 @@ fn a_failed_lookup_closes_only_that_session() {
 }
 
 #[test]
+fn a_slow_old_lookup_does_not_replace_the_newest_answer() {
+    use crate::pane::{Pane, Status};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    fn first_is_slow(_: &str, _: u16) -> std::io::Result<()> {
+        if CALLS.fetch_add(1, Ordering::SeqCst) == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            return Err(std::io::Error::other("old answer"));
+        }
+        Err(std::io::Error::other("new answer"))
+    }
+    let app = App::new(location());
+    let target = Target {
+        host: "sw1.example".to_string(),
+        ..Default::default()
+    };
+    let mut pane = Pane::new(app.spec_for_test("sw", &target), std::sync::Arc::new(|| {}));
+    pane.look_up = first_is_slow;
+    pane.connect();
+    pane.connect();
+    // Both answers are in before the window looks, the old one last.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    pane.tick_reconnect();
+    let Status::Closed { reason } = pane.status() else {
+        panic!("the newest answer was lost and the session waits forever");
+    };
+    assert!(reason.unwrap_or_default().contains("new answer"));
+}
+
+#[test]
+fn a_jump_host_is_looked_up_before_the_shared_thread_sees_it() {
+    use crate::pane::{Pane, Status};
+    static ASKED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    fn no_such_host(host: &str, _: u16) -> std::io::Result<()> {
+        ASKED.lock().unwrap().push(host.to_string());
+        Err(std::io::Error::other("no such host"))
+    }
+    let app = App::new(location());
+    let target = Target {
+        host: "sw1.example".to_string(),
+        ..Default::default()
+    };
+    let mut spec = app.spec_for_test("sw", &target);
+    let hop = spec.settings.clone();
+    spec.settings.via_jump_host(
+        &linecon_engine::settings::JumpHost::parse("ops@bastion.example").unwrap(),
+        &hop,
+    );
+    let mut pane = Pane::new(spec, std::sync::Arc::new(|| {}));
+    pane.look_up = no_such_host;
+    pane.connect();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while pane.status() == Status::Connecting && std::time::Instant::now() < deadline {
+        pane.tick_reconnect();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let Status::Closed { reason } = pane.status() else {
+        panic!("still connecting");
+    };
+    let reason = reason.unwrap_or_default();
+    assert!(
+        reason.contains("could not look up bastion.example"),
+        "{reason}"
+    );
+    assert_eq!(*ASKED.lock().unwrap(), ["bastion.example"]);
+}
+
+#[test]
 fn the_finder_searches_sessions_by_name_address_and_folder() {
     let mut s = sample();
     let folder = s.app.config.add_folder(None, "Datacenter").unwrap();
