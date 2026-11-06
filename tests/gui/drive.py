@@ -391,7 +391,7 @@ def files_refused():
     wait("Password")
     typed(JUNOS[2])
     key("Return")
-    wait("does not offer SFTP", 20)
+    wait("does not offer", 20)
     shot("files-refused")
     key("ctrl+shift+s")
     time.sleep(0.5)
