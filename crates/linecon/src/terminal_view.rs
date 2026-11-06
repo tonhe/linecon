@@ -319,6 +319,60 @@ pub fn show(
     output
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClipboardEvent {
+    Copy,
+    Cut,
+}
+
+/// Stands for "encode the Delete key", which needs the terminal's mode.
+const DELETE_KEY: &[u8] = b"<delete>";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClipboardKey {
+    /// Copy the selection, as Ctrl+Insert does on Windows and Command+C on a Mac.
+    Clipboard,
+    Send(&'static [u8]),
+    Nothing,
+}
+
+/// What a key egui turned into a clipboard event means in a terminal. Ctrl+C and Ctrl+X are
+/// control characters for the host. On Windows egui also turns Ctrl+Insert into Copy and
+/// Shift+Delete into Cut, and those keep their usual meaning.
+fn clipboard_key(event: ClipboardEvent, mods: egui::Modifiers, insert_held: bool) -> ClipboardKey {
+    if cfg!(target_os = "macos") {
+        return match event {
+            ClipboardEvent::Copy => ClipboardKey::Clipboard,
+            ClipboardEvent::Cut => ClipboardKey::Nothing,
+        };
+    }
+    match event {
+        ClipboardEvent::Copy if insert_held => ClipboardKey::Clipboard,
+        ClipboardEvent::Copy => ClipboardKey::Send(&[0x03]),
+        ClipboardEvent::Cut if mods.shift && !mods.ctrl => ClipboardKey::Send(DELETE_KEY),
+        ClipboardEvent::Cut => ClipboardKey::Send(&[0x18]),
+    }
+}
+
+/// Whether Insert is down, which is how Ctrl+Insert is told from Ctrl+C: egui hands over
+/// both as the same Copy event.
+#[cfg(windows)]
+fn insert_held() -> bool {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetKeyState(key: i32) -> i16;
+        fn GetAsyncKeyState(key: i32) -> i16;
+    }
+    const VK_INSERT: i32 = 0x2D;
+    // SAFETY: both only read keyboard state.
+    unsafe { GetKeyState(VK_INSERT) < 0 || GetAsyncKeyState(VK_INSERT) < 0 }
+}
+
+#[cfg(not(windows))]
+fn insert_held() -> bool {
+    false
+}
+
 fn handle_keyboard(ui: &mut Ui, pane: &Pane, output: &mut ViewOutput) {
     let mode = pane.shared.core.lock().unwrap().mode();
     let events = ui.ctx().input(|i| i.events.clone());
@@ -328,23 +382,44 @@ fn handle_keyboard(ui: &mut Ui, pane: &Pane, output: &mut ViewOutput) {
             .unwrap_or(false)
     });
     let mut out = Vec::new();
+    // egui also hands over the letter of an Alt+letter as text, after the key. It is kept
+    // across frames, in case the two arrive in different ones.
+    let alt_id = egui::Id::unique((
+        "linecon-alt-letter",
+        std::sync::Arc::as_ptr(&pane.shared) as usize,
+    ));
+    let mut sent_with_alt: Option<u8> = ui.ctx().data(|d| d.get_temp(alt_id)).flatten();
     for event in events {
         match event {
-            UiEvent::Text(text) => out.extend(text.into_bytes()),
+            UiEvent::Text(text) => {
+                if let Some(letter) = sent_with_alt.take() {
+                    if text.len() == 1 && text.as_bytes()[0].eq_ignore_ascii_case(&letter) {
+                        continue;
+                    }
+                }
+                out.extend(text.into_bytes())
+            }
             UiEvent::Ime(egui::ImeEvent::Commit(text)) => out.extend(text.into_bytes()),
             // egui turns these combinations into clipboard events and swallows
             // the key. In a terminal they are control characters, unless they
             // are the macOS command key, which never reaches a remote host.
-            UiEvent::Copy => {
-                if cfg!(target_os = "macos") {
-                    copy_selection(ui.ctx(), pane);
-                } else {
-                    out.push(0x03);
-                }
-            }
+            UiEvent::Copy => match clipboard_key(ClipboardEvent::Copy, current_mods, insert_held())
+            {
+                ClipboardKey::Clipboard => copy_selection(ui.ctx(), pane),
+                ClipboardKey::Send(bytes) => out.extend(bytes),
+                ClipboardKey::Nothing => {}
+            },
             UiEvent::Cut => {
-                if !cfg!(target_os = "macos") {
-                    out.push(0x18);
+                if let ClipboardKey::Send(bytes) =
+                    clipboard_key(ClipboardEvent::Cut, current_mods, false)
+                {
+                    out.extend(match bytes {
+                        // Shift+Delete is the Delete key here, not a cut.
+                        DELETE_KEY => {
+                            keys::encode_key(Key::Delete, current_mods, mode).unwrap_or_default()
+                        }
+                        other => other.to_vec(),
+                    });
                 }
             }
             UiEvent::Paste(text) => {
@@ -363,6 +438,8 @@ fn handle_keyboard(ui: &mut Ui, pane: &Pane, output: &mut ViewOutput) {
                 modifiers,
                 ..
             } => {
+                // Only the text right after the Alt key repeats it.
+                sent_with_alt = None;
                 if is_app_shortcut(key, modifiers) {
                     continue;
                 }
@@ -393,12 +470,14 @@ fn handle_keyboard(ui: &mut Ui, pane: &Pane, output: &mut ViewOutput) {
                         } else {
                             letter.to_ascii_lowercase()
                         });
+                        sent_with_alt = Some(letter);
                     }
                 }
             }
             _ => {}
         }
     }
+    ui.ctx().data_mut(|d| d.insert_temp(alt_id, sent_with_alt));
     if !out.is_empty() {
         // Typing returns to the live screen.
         pane.shared.core.lock().unwrap().scroll(Scroll::Bottom);
@@ -602,6 +681,42 @@ pub fn search_step(pane: &Pane, search: &mut Search, forward: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_keys_in_a_terminal() {
+        let ctrl = egui::Modifiers::CTRL;
+        let shift = egui::Modifiers::SHIFT;
+        let copy = |mods, insert| clipboard_key(ClipboardEvent::Copy, mods, insert);
+        let cut = |mods| clipboard_key(ClipboardEvent::Cut, mods, false);
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                copy(egui::Modifiers::MAC_CMD, false),
+                ClipboardKey::Clipboard
+            );
+            assert_eq!(cut(egui::Modifiers::MAC_CMD), ClipboardKey::Nothing);
+            return;
+        }
+        assert_eq!(
+            copy(ctrl, false),
+            ClipboardKey::Send(&[0x03]),
+            "Ctrl+C interrupts"
+        );
+        assert_eq!(
+            copy(ctrl, true),
+            ClipboardKey::Clipboard,
+            "Ctrl+Insert copies"
+        );
+        assert_eq!(
+            cut(ctrl),
+            ClipboardKey::Send(&[0x18]),
+            "Ctrl+X is a control character"
+        );
+        assert_eq!(
+            cut(shift),
+            ClipboardKey::Send(DELETE_KEY),
+            "Shift+Delete deletes"
+        );
+    }
 
     #[test]
     fn only_bound_keys_are_kept_from_the_device() {

@@ -219,20 +219,23 @@ impl Resolved {
             if !forwards.is_empty() {
                 s.set("PortForwardings", PortForward::to_setting(&forwards));
             }
-            if !self.jump_host.value.is_empty() {
-                // A typo must fail the connection, never quietly go direct. An
-                // unparsable value is kept as a host name that will not resolve.
-                let jump = JumpHost::parse(&self.jump_host.value).unwrap_or_else(|_| JumpHost {
-                    user: String::new(),
-                    host: self.jump_host.value.replace([' ', ':'], "_"),
-                    port: 22,
-                });
-                let mut hop = Settings::ssh(&jump.host, jump.port, username);
-                hop.algorithms(&self.algorithm_policy());
-                hop.set("PingInterval", keepalive / 60)
-                    .set("PingIntervalSecs", keepalive % 60);
-                s.via_jump_host(&jump, &hop);
-            }
+        }
+        // Telnet and raw go through a jump host too: going direct instead would reach a
+        // device from somewhere it may not expect, or not at all.
+        if target.protocol != Protocol::Serial && !self.jump_host.value.is_empty() {
+            // A typo must fail the connection, never quietly go direct. An
+            // unparsable value is kept as a host name that will not resolve.
+            let jump = JumpHost::parse(&self.jump_host.value).unwrap_or_else(|_| JumpHost {
+                user: String::new(),
+                host: self.jump_host.value.replace([' ', ':'], "_"),
+                port: 22,
+            });
+            let keepalive = self.keepalive_secs.value;
+            let mut hop = Settings::ssh(&jump.host, jump.port, username);
+            hop.algorithms(&self.algorithm_policy());
+            hop.set("PingInterval", keepalive / 60)
+                .set("PingIntervalSecs", keepalive % 60);
+            s.via_jump_host(&jump, &hop);
         }
         s
     }
@@ -474,6 +477,33 @@ mod tests {
         assert_eq!(s.get("ProxyMethod"), Some("6"));
         assert_eq!(s.get("Jump.HostName"), Some("bastion"));
         assert_eq!(s.get("Jump.UserName"), Some("admin"));
+    }
+
+    #[test]
+    fn telnet_and_raw_go_through_an_inherited_jump_host() {
+        let mut t = tree();
+        t.config.overrides_mut(t.site).unwrap().jump_host = Some("ops@bastion".into());
+        let resolved = t.config.resolve(t.sw).unwrap();
+        for protocol in [Protocol::Telnet, Protocol::Raw] {
+            let target = Target {
+                protocol,
+                ..target()
+            };
+            let s = resolved.engine_settings(&target, "admin");
+            assert_eq!(s.get("ProxyHost"), Some("ops@bastion:22"), "{protocol:?}");
+            assert_eq!(s.get("Jump.Protocol"), Some("ssh"), "{protocol:?}");
+            assert_eq!(s.get("HostName"), Some("sw1"), "{protocol:?}");
+        }
+        let serial = Target {
+            protocol: Protocol::Serial,
+            line: "/dev/ttyUSB0".into(),
+            ..target()
+        };
+        assert_eq!(
+            resolved.engine_settings(&serial, "admin").get("ProxyHost"),
+            None,
+            "a serial line has nothing to jump through"
+        );
     }
 
     #[test]

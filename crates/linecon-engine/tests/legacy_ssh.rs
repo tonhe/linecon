@@ -370,6 +370,49 @@ fn through_a_legacy_jump_host_to_a_legacy_target() {
 }
 
 #[test]
+fn a_raw_session_goes_through_a_jump_host() {
+    let Some(server) = server() else { return };
+    // Port 2202 is only reachable from inside the container, so its banner arriving here
+    // means the raw connection really went through the jump host.
+    let mut target = Settings::raw("127.0.0.1", 2202);
+    target.terminal_size(80, 24);
+    let hop = settings(1, &AlgorithmPolicy::legacy());
+    let jump = JumpHost {
+        user: "lab".into(),
+        host: "127.0.0.1".into(),
+        port: server.group1_3des,
+    };
+    target.via_jump_host(&jump, &hop);
+    let session = Session::open(&target).expect("open");
+    let deadline = Instant::now() + TIMEOUT;
+    let mut output = String::new();
+    while Instant::now() < deadline {
+        match session.recv_timeout(Duration::from_millis(200)) {
+            Ok(Event::HostKey(_)) => session.answer_hostkey(HostKeyVerdict::AcceptOnce),
+            Ok(Event::WeakCrypto { .. }) => session.answer_weak(true),
+            Ok(Event::Prompt(prompt)) => {
+                let answers: Vec<&str> = prompt
+                    .fields
+                    .iter()
+                    .map(|f| if f.echo { "lab" } else { PASSWORD })
+                    .collect();
+                session.answer_prompt(&answers);
+            }
+            Ok(Event::Output { data, .. }) => {
+                output.push_str(&String::from_utf8_lossy(&data));
+                if output.contains("SSH-") {
+                    return;
+                }
+            }
+            Ok(Event::Closed { reason, .. }) => panic!("closed: {reason:?}; saw {output:?}"),
+            Ok(_) | Err(RecvError::Timeout) => {}
+            Err(RecvError::Disconnected) => panic!("engine went away"),
+        }
+    }
+    panic!("no banner through the jump host; saw {output:?}");
+}
+
+#[test]
 fn a_jump_host_that_refuses_fails_the_connection() {
     let Some(server) = server() else { return };
     // Modern settings on the hop against a legacy-only jump host must not connect.
