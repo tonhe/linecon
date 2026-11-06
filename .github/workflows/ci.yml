@@ -72,6 +72,12 @@ jobs:
       - name: Smoke test release binary
         shell: bash
         run: target/release/linecon --version
+      - name: Command-line tests against the release binary
+        # The protocol tests above run a debug build; this is the one that ships.
+        if: runner.os == 'Linux'
+        env:
+          LINECON_TEST_BINARY: ${{ github.workspace }}/target/release/linecon
+        run: cargo test --locked -p linecon --test cli_pty
       - name: Install a virtual display
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb libgl1-mesa-dri libegl1 libxkbcommon-x11-0

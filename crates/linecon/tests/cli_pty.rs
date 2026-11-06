@@ -14,6 +14,15 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const IMAGE: &str = "linecon-legacy-sshd";
+
+/// The program under test: this build, or the release build when CI names it.
+fn binary() -> std::path::PathBuf {
+    match std::env::var_os("LINECON_TEST_BINARY") {
+        Some(path) => std::fs::canonicalize(&path)
+            .unwrap_or_else(|e| panic!("LINECON_TEST_BINARY {path:?}: {e}")),
+        None => env!("CARGO_BIN_EXE_linecon").into(),
+    }
+}
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 fn docker(args: &[&str]) -> Option<String> {
@@ -112,7 +121,7 @@ fn spawn_on_pty(args: &[String], config_home: &Path) -> (std::process::Child, Te
     };
     let stdio = || Stdio::from(follower.try_clone().unwrap());
     let raw_follower = follower.as_raw_fd();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_linecon"));
+    let mut command = Command::new(binary());
     command
         .args(args)
         .env("XDG_CONFIG_HOME", config_home)
@@ -357,7 +366,7 @@ fn a_question_with_no_input_left_does_not_hang() {
         return;
     };
     let config = temp_config("eof");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_linecon"))
+    let mut child = Command::new(binary())
         .args(["ssh", "127.0.0.1", &port.to_string(), "lab", "--legacy"])
         .env("XDG_CONFIG_HOME", &config)
         .env("HOME", &config)
@@ -387,10 +396,7 @@ fn a_negotiation_failure_exits_non_zero() {
 
 #[test]
 fn version_names_the_build_rather_than_a_placeholder() {
-    let out = Command::new(env!("CARGO_BIN_EXE_linecon"))
-        .arg("--version")
-        .output()
-        .unwrap();
+    let out = Command::new(binary()).arg("--version").output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.starts_with("linecon "), "{text}");
     assert!(!text.contains("Unidentified"), "{text}");

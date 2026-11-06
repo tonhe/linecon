@@ -232,14 +232,20 @@ fn unknown_host_key_is_never_silently_accepted() {
     let s = settings(server.group1_3des, &AlgorithmPolicy::legacy());
     let session = Session::open(&s).expect("open");
     let deadline = Instant::now() + TIMEOUT;
+    let mut asked = false;
     while Instant::now() < deadline {
         match session.recv_timeout(Duration::from_millis(200)) {
             Ok(Event::HostKey(prompt)) => {
                 assert!(!prompt.description.is_empty());
+                asked = true;
                 session.answer_hostkey(HostKeyVerdict::Reject);
             }
             Ok(Event::Prompt(_)) | Ok(Event::Started) => panic!("got past a rejected host key"),
-            Ok(Event::Closed { .. }) => return,
+            // Closing before the key was offered would prove nothing.
+            Ok(Event::Closed { reason, .. }) => {
+                assert!(asked, "closed before any key was offered: {reason:?}");
+                return;
+            }
             Ok(_) | Err(RecvError::Timeout) => {}
             Err(RecvError::Disconnected) => panic!("engine went away"),
         }
@@ -424,9 +430,14 @@ fn a_jump_host_that_refuses_fails_the_connection() {
         port: server.group1_3des,
     };
     target.via_jump_host(&jump, &hop);
-    let Outcome::Failed(_) = run_command(&target, COMMAND, false) else {
+    let Outcome::Failed(reason) = run_command(&target, COMMAND, false) else {
         panic!("connected through a jump host that should have refused");
     };
+    // The refusal has to be the hop's algorithms, not any connection that died.
+    assert!(
+        negotiation::is_negotiation_failure(&reason),
+        "failed for another reason: {reason}"
+    );
 }
 
 fn free_port() -> u16 {

@@ -1,9 +1,10 @@
 #!/bin/bash
 # Proves the real window opens on this runner, and photographs it where possible.
 set -u
+# Usage: smoke.sh [binary], the release build by default.
 case "$(uname -s)" in
-  MINGW*|MSYS*|CYGWIN*) binary=target/release/linecon.exe ;;
-  *) binary=target/release/linecon ;;
+  MINGW*|MSYS*|CYGWIN*) binary=${1:-target/release/linecon.exe} ;;
+  *) binary=${1:-target/release/linecon} ;;
 esac
 rm -f smoke.txt
 case "$(uname -s)" in

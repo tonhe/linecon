@@ -105,6 +105,8 @@ case "$name" in
     fi
     codesign --verify --deep --strict "$app"
     "$app/Contents/MacOS/linecon" --version
+    # What ships, signed and stapled, has to open its window too.
+    packaging/smoke.sh "$app/Contents/MacOS/linecon"
     (cd dist && ditto -c -k --keepParent linecon0.app "linecon0-$name.app.zip")
     rm -rf "$app"
     # Named so it is not mistaken for the app: this one is for terminal use.

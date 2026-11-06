@@ -182,6 +182,19 @@ fn collect_names(
     }
 }
 
+/// PuTTY's words for a server that turned the SFTP subsystem down are about shells, which
+/// means nothing to someone opening a file browser.
+fn explain_refusal(reason: String) -> String {
+    if reason.contains("refused to start a shell/command") {
+        NO_SFTP.to_string()
+    } else {
+        reason
+    }
+}
+
+/// What a server without SFTP is reported as.
+pub const NO_SFTP: &str = "this device does not offer SFTP file transfer";
+
 /// Pulls complete packets out of the byte stream from the server.
 #[derive(Default)]
 struct Framer(Vec<u8>);
@@ -282,7 +295,7 @@ impl Sftp {
                     let reason = failure.or(reason).unwrap_or_else(|| {
                         "the server closed the connection; it may not offer SFTP".to_string()
                     });
-                    return Err(io::Error::other(reason));
+                    return Err(io::Error::other(explain_refusal(reason)));
                 }
                 Ok(_) => {}
                 Err(RecvError::Timeout) => {

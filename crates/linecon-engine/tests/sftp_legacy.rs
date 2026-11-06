@@ -201,5 +201,6 @@ fn a_server_without_sftp_says_so() {
     let error = Sftp::connect(&settings, &mut Lab)
         .err()
         .expect("no SFTP on this port");
-    assert!(!error.to_string().is_empty());
+    // Anything else, such as a refused connection, would be a different failure.
+    assert_eq!(error.to_string(), linecon_engine::sftp::NO_SFTP);
 }

@@ -190,7 +190,10 @@ def passphrase():
     assert "Quick sessions" in config, "no Quick sessions folder in the config"
     assert "192.168.42.101" in config, "session not saved"
     assert "has_password = true" in config, config[:600]
-    assert IOS[2] + "\n" not in open(f"{CONFIG}/secrets.bin", "rb").read().decode("latin1"), "plaintext"
+    # Anywhere in the file, in any form a careless writer might use.
+    stored = open(f"{CONFIG}/secrets.bin", "rb").read()
+    for form in (IOS[2].encode(), IOS[2].encode("utf-16-le")):
+        assert form not in stored, "the password is in the vault file in plain text"
 
 
 @step("typing goes to the device without clicking anything")
@@ -388,7 +391,7 @@ def files_refused():
     wait("Password")
     typed(JUNOS[2])
     key("Return")
-    wait("Could not open", 20)
+    wait("does not offer SFTP", 20)
     shot("files-refused")
     key("ctrl+shift+s")
     time.sleep(0.5)
