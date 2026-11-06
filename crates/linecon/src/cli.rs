@@ -173,6 +173,8 @@ struct Input {
     answering: AtomicBool,
     local_echo: AtomicBool,
     answers: Mutex<Option<mpsc::Sender<u8>>>,
+    /// Nothing more will be typed, so a question must not wait for an answer.
+    closed: AtomicBool,
 }
 
 /// Reads one answer from the keyboard while the session waits.
@@ -180,7 +182,15 @@ fn ask(input: &Input, question: &str, echo: bool) -> Option<String> {
     // Ready before asking: an answer typed the moment the question appears must not
     // go to the session instead.
     let (tx, rx) = mpsc::channel();
-    *input.answers.lock().unwrap() = Some(tx);
+    {
+        let mut answers = input.answers.lock().unwrap();
+        // Checked under the same lock the reader closes with, so an end of input that
+        // happens now is not missed.
+        if input.closed.load(Ordering::SeqCst) {
+            return None;
+        }
+        *answers = Some(tx);
+    }
     input.answering.store(true, Ordering::SeqCst);
     say(question);
     let mut line: Vec<u8> = Vec::new();
@@ -291,6 +301,7 @@ fn connect(settings: &Settings, policy: &AlgorithmPolicy) -> i32 {
         answering: AtomicBool::new(false),
         local_echo: AtomicBool::new(false),
         answers: Mutex::new(None),
+        closed: AtomicBool::new(false),
     });
 
     {
@@ -333,6 +344,11 @@ fn connect(settings: &Settings, policy: &AlgorithmPolicy) -> i32 {
                     }
                 }
             }
+            // No more input: a question waiting for an answer gets none instead of
+            // waiting forever, and so does any asked later.
+            let mut answers = input.answers.lock().unwrap();
+            input.closed.store(true, Ordering::SeqCst);
+            answers.take();
         });
     }
 
@@ -397,6 +413,9 @@ fn connect(settings: &Settings, policy: &AlgorithmPolicy) -> i32 {
                     Some("o" | "once") => HostKeyVerdict::AcceptOnce,
                     _ => HostKeyVerdict::Reject,
                 };
+                if verdict == HostKeyVerdict::Reject {
+                    failure.get_or_insert_with(|| "the host key was not trusted".to_string());
+                }
                 session.answer_hostkey(verdict);
             }
             Ok(Event::WeakCrypto { description }) => {
@@ -446,7 +465,11 @@ fn connect(settings: &Settings, policy: &AlgorithmPolicy) -> i32 {
                 };
             }
             Ok(_) | Err(RecvError::Timeout) => {}
-            Err(RecvError::Disconnected) => return 1,
+            Err(RecvError::Disconnected) => {
+                raw.restore();
+                eprintln!("the protocol engine stopped");
+                return 1;
+            }
         }
     }
 }

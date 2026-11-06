@@ -10,7 +10,7 @@
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::algorithms::{AlgorithmPolicy, SshVersion, MACS};
 
@@ -99,25 +99,73 @@ pub fn parse_kexinit(banner: String, mut payload: &[u8]) -> io::Result<ServerOff
     })
 }
 
-/// Connects and reads the server's offer without logging in.
-pub fn probe(host: &str, port: u16, timeout: Duration) -> io::Result<ServerOffer> {
-    let addr = (host, port)
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| bad("host name did not resolve"))?;
-    let mut stream = TcpStream::connect_timeout(&addr, timeout)?;
-    stream.set_read_timeout(Some(timeout))?;
-    stream.set_write_timeout(Some(timeout))?;
+/// Reads with whatever is left of one deadline, so a server trickling bytes cannot stretch
+/// a probe past it.
+struct UntilDeadline {
+    stream: TcpStream,
+    deadline: Instant,
+}
 
-    // The timeout is per read, and a server could send a line every few seconds forever.
-    let deadline = std::time::Instant::now() + timeout;
-    let banner = loop {
-        if std::time::Instant::now() > deadline {
+impl UntilDeadline {
+    fn left(&self) -> io::Result<Duration> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                "no SSH banner in time",
+                "the server did not answer in time",
             ));
         }
+        Ok(left)
+    }
+}
+
+impl Read for UntilDeadline {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let left = self.left()?;
+        self.stream.set_read_timeout(Some(left))?;
+        self.stream.read(buf)
+    }
+}
+
+/// Looks a name up, giving up when the time is gone. The lookup itself cannot be stopped,
+/// so it finishes on its own thread.
+fn look_up(host: &str, port: u16, timeout: Duration) -> io::Result<std::net::SocketAddr> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let host = host.to_string();
+    std::thread::spawn(move || {
+        let _ = tx.send(
+            (host.as_str(), port)
+                .to_socket_addrs()
+                .map(|mut a| a.next()),
+        );
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(Some(addr))) => Ok(addr),
+        Ok(Ok(None)) => Err(bad("host name did not resolve")),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "the name lookup did not finish in time",
+        )),
+    }
+}
+
+/// Connects and reads the server's offer without logging in, all within `timeout`.
+pub fn probe(host: &str, port: u16, timeout: Duration) -> io::Result<ServerOffer> {
+    let deadline = Instant::now() + timeout;
+    let addr = look_up(host, port, timeout)?;
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "no time left to connect",
+        ));
+    }
+    let stream = TcpStream::connect_timeout(&addr, left)?;
+    stream.set_write_timeout(Some(timeout))?;
+    let mut stream = UntilDeadline { stream, deadline };
+
+    let banner = loop {
         let line = read_line(&mut stream)?;
         if line.starts_with("SSH-") {
             break line;
@@ -129,7 +177,7 @@ pub fn probe(host: &str, port: u16, timeout: Duration) -> io::Result<ServerOffer
             ..Default::default()
         });
     }
-    stream.write_all(b"SSH-2.0-linecon_probe\r\n")?;
+    stream.stream.write_all(b"SSH-2.0-linecon_probe\r\n")?;
 
     let mut header = [0u8; 5];
     stream.read_exact(&mut header)?;
@@ -271,6 +319,27 @@ mod hostile_server_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_trickling_server_cannot_stretch_a_probe() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            // A byte at a time, well inside any per-read timeout, never a whole line.
+            while stream.write_all(b"x").is_ok() {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        });
+        let started = Instant::now();
+        let result = probe("127.0.0.1", port, Duration::from_secs(1));
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
 
     fn list(out: &mut Vec<u8>, names: &str) {
         out.extend((names.len() as u32).to_be_bytes());

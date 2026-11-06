@@ -349,6 +349,27 @@ fn rsa_with_sha1_stays_behind_the_legacy_toggle() {
 }
 
 /// Old gear refusing a connection is also a failure in the exit status.
+/// With nothing left to read, a question gets no answer instead of waiting for one: here the
+/// host key is not trusted and the client exits.
+#[test]
+fn a_question_with_no_input_left_does_not_hang() {
+    let Some((_container, port)) = start_or_skip("legacy-sshd", IMAGE, "2201") else {
+        return;
+    };
+    let config = temp_config("eof");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_linecon"))
+        .args(["ssh", "127.0.0.1", &port.to_string(), "lab", "--legacy"])
+        .env("XDG_CONFIG_HOME", &config)
+        .env("HOME", &config)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    assert_ne!(wait_for_exit(&mut child).code(), Some(0));
+    let _ = std::fs::remove_dir_all(&config);
+}
+
 #[test]
 fn a_negotiation_failure_exits_non_zero() {
     let Some((_container, port)) = start_or_skip("legacy-sshd", IMAGE, "2201") else {
