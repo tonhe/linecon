@@ -241,17 +241,58 @@ pub fn parse_ssh_config(text: &str) -> ImportResult {
     result
 }
 
+/// An ssh_config pattern: `*` is any run of characters, `?` any one, case ignored. On a
+/// mismatch it only ever returns to the last `*`, so a pattern like `*a*a*a*b` cannot take
+/// exponential time.
 fn glob_match(pattern: &str, text: &str) -> bool {
-    fn inner(p: &[u8], t: &[u8]) -> bool {
-        match (p.first(), t.first()) {
-            (None, None) => true,
-            (Some(b'*'), _) => inner(&p[1..], t) || (!t.is_empty() && inner(p, &t[1..])),
-            (Some(b'?'), Some(_)) => inner(&p[1..], &t[1..]),
-            (Some(a), Some(b)) if a.eq_ignore_ascii_case(b) => inner(&p[1..], &t[1..]),
-            _ => false,
+    let (p, t) = (pattern.as_bytes(), text.as_bytes());
+    let (mut pi, mut ti) = (0, 0);
+    // Where the last `*` was, and how much text it has taken so far.
+    let mut star: Option<(usize, usize)> = None;
+    while ti < t.len() {
+        match p.get(pi) {
+            Some(b'*') => {
+                star = Some((pi, ti));
+                pi += 1;
+            }
+            Some(b'?') => {
+                pi += 1;
+                ti += 1;
+            }
+            Some(c) if c.eq_ignore_ascii_case(&t[ti]) => {
+                pi += 1;
+                ti += 1;
+            }
+            _ => match star {
+                Some((star_p, star_t)) => {
+                    pi = star_p + 1;
+                    ti = star_t + 1;
+                    star = Some((star_p, star_t + 1));
+                }
+                None => return false,
+            },
         }
     }
-    inner(pattern.as_bytes(), text.as_bytes())
+    p[pi..].iter().all(|&c| c == b'*')
+}
+
+/// The largest file an import reads. Session files are small, and a huge one is a mistake.
+pub const MAX_IMPORT_FILE: u64 = 32 * 1024 * 1024;
+
+/// Reads a file to import, refusing one too large to be what it claims.
+pub fn read_limited(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let mut data = Vec::new();
+    file.take(MAX_IMPORT_FILE + 1).read_to_end(&mut data)?;
+    if data.len() as u64 > MAX_IMPORT_FILE {
+        return Err(std::io::Error::other(format!(
+            "{} is larger than {} MB, too large to be a settings file",
+            path.display(),
+            MAX_IMPORT_FILE / (1024 * 1024)
+        )));
+    }
+    Ok(data)
 }
 
 // -------------------------------------------------------------- PuTTY / KiTTY
@@ -433,7 +474,7 @@ pub fn read_windows_registry(kitty: bool) -> Result<ImportResult, String> {
     if !status.status.success() {
         return Err("no saved sessions were found in the registry".to_string());
     }
-    let data = std::fs::read(&path).map_err(|e| e.to_string());
+    let data = read_limited(&path).map_err(|e| e.to_string());
     let _ = std::fs::remove_file(&path);
     Ok(parse_reg(&decode_text(&data?)))
 }
@@ -708,7 +749,7 @@ fn walk(dir: &Path, folders: &[String], result: &mut ImportResult, count: &mut u
             walk(&path, &nested, result, count);
             continue;
         }
-        let Ok(data) = std::fs::read(&path) else {
+        let Ok(data) = read_limited(&path) else {
             continue;
         };
         let text = decode_text(&data);
@@ -746,7 +787,7 @@ pub fn import_path(path: &Path) -> Result<Option<ImportResult>, String> {
         walk(path, &[], &mut result, &mut count);
         return Ok((!result.sessions.is_empty() || result.skipped > 0).then_some(result));
     }
-    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    let data = read_limited(path).map_err(|e| e.to_string())?;
     let text = decode_text(&data);
     let name = path
         .file_name()
@@ -1260,6 +1301,51 @@ mod bundle_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_config_patterns_match_like_ssh() {
+        let cases = [
+            ("*", "anything", true),
+            ("*", "", true),
+            ("", "", true),
+            ("", "a", false),
+            ("sw?", "sw1", true),
+            ("sw?", "sw12", false),
+            ("*.lab", "core.LAB", true),
+            ("core-*-sw", "core-dc1-sw", true),
+            ("core-*-sw", "core-dc1-rtr", false),
+            ("a*b*c", "aXbYc", true),
+            ("a*b*c", "aXbY", false),
+            ("**", "x", true),
+            ("*a", "bbb", false),
+        ];
+        for (pattern, text, expected) in cases {
+            assert_eq!(glob_match(pattern, text), expected, "{pattern} vs {text}");
+        }
+    }
+
+    #[test]
+    fn a_pathological_pattern_does_not_stall() {
+        let pattern = format!("{}b", "*a".repeat(40));
+        let text = "a".repeat(200);
+        let started = std::time::Instant::now();
+        assert!(!glob_match(&pattern, &text));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn an_oversized_file_is_refused() {
+        let dir = std::env::temp_dir().join(format!("linecon-import-size-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("huge.ini");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_IMPORT_FILE + 1).unwrap();
+        let error = read_limited(&path).unwrap_err().to_string();
+        assert!(error.contains("too large"), "{error}");
+        std::fs::write(&path, b"S:\"Hostname\"=sw1").unwrap();
+        assert!(read_limited(&path).is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn snippets_round_trip_and_merge_without_duplicates() {

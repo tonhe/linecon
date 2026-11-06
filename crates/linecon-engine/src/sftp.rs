@@ -43,6 +43,10 @@ const ATTR_EXTENDED: u32 = 0x8000_0000;
 
 /// Largest packet accepted from a server. Bounds what a hostile one can allocate.
 const MAX_PACKET: usize = 1024 * 1024;
+/// The most entries one folder listing holds, so a hostile server cannot fill memory.
+const MAX_ENTRIES: usize = 100_000;
+/// Reads in a row that return neither names nor the end of the folder.
+const MAX_EMPTY_READS: usize = 16;
 const CHUNK: usize = 32 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -135,6 +139,47 @@ fn put_u32(out: &mut Vec<u8>, v: u32) {
 fn put_bytes(out: &mut Vec<u8>, b: &[u8]) {
     put_u32(out, b.len() as u32);
     out.extend(b);
+}
+
+/// Reads a directory's names. A server could send names forever, or answer each read
+/// with neither names nor an end, so both are limited.
+fn collect_names(
+    mut next_reply: impl FnMut() -> io::Result<(u8, Vec<u8>)>,
+) -> io::Result<Vec<DirEntry>> {
+    let mut entries = Vec::new();
+    let mut empty_replies = 0;
+    loop {
+        let (reply, body) = next_reply()?;
+        if reply == FXP_STATUS {
+            if status_code(&body)? == STATUS_EOF {
+                return Ok(entries);
+            }
+            check_status(reply, &body)?;
+            empty_replies += 1;
+            if empty_replies > MAX_EMPTY_READS {
+                return Err(bad("the server never finished listing this folder"));
+            }
+            continue;
+        }
+        if reply != FXP_NAME {
+            return Err(bad("expected names"));
+        }
+        let mut reader = Reader(&body);
+        for _ in 0..reader.u32()? {
+            let name = reader.string()?;
+            let _long_name = reader.bytes()?;
+            let attrs = reader.attrs()?;
+            if name != "." && name != ".." {
+                if entries.len() == MAX_ENTRIES {
+                    return Err(io::Error::other(format!(
+                        "this folder has more than {MAX_ENTRIES} entries, more than \
+                         linecon0 lists"
+                    )));
+                }
+                entries.push(DirEntry { name, attrs });
+            }
+        }
+    }
 }
 
 /// Pulls complete packets out of the byte stream from the server.
@@ -349,30 +394,11 @@ impl Sftp {
     /// Lists a directory, folders first, without `.` and `..`.
     pub fn list(&mut self, path: &str) -> io::Result<Vec<DirEntry>> {
         let handle = self.handle(FXP_OPENDIR, |b| put_bytes(b, path.as_bytes()))?;
-        let mut entries = Vec::new();
-        loop {
-            let (reply, body) = self.request(FXP_READDIR, |b| put_bytes(b, &handle))?;
-            if reply == FXP_STATUS {
-                if status_code(&body)? == STATUS_EOF {
-                    break;
-                }
-                check_status(reply, &body)?;
-                continue;
-            }
-            if reply != FXP_NAME {
-                return Err(bad("expected names"));
-            }
-            let mut reader = Reader(&body);
-            for _ in 0..reader.u32()? {
-                let name = reader.string()?;
-                let _long_name = reader.bytes()?;
-                let attrs = reader.attrs()?;
-                if name != "." && name != ".." {
-                    entries.push(DirEntry { name, attrs });
-                }
-            }
-        }
-        self.close_handle(&handle)?;
+        let listed = collect_names(|| self.request(FXP_READDIR, |b| put_bytes(b, &handle)));
+        // The handle is closed whatever happened, or the server keeps it open.
+        let closed = self.close_handle(&handle);
+        let mut entries = listed?;
+        closed?;
         entries.sort_by(|a, b| {
             b.attrs
                 .is_dir()
@@ -557,6 +583,59 @@ mod tests {
         assert_eq!(framer.next().unwrap(), Some((FXP_STATUS, b"abc".to_vec())));
         assert_eq!(framer.next().unwrap(), Some((FXP_DATA, b"de".to_vec())));
         assert!(framer.next().unwrap().is_none());
+    }
+
+    fn names(count: u32, prefix: &str) -> Vec<u8> {
+        let mut body = Vec::new();
+        put_u32(&mut body, count);
+        for n in 0..count {
+            put_bytes(&mut body, format!("{prefix}{n}").as_bytes());
+            put_bytes(&mut body, b"");
+            put_u32(&mut body, 0);
+        }
+        body
+    }
+
+    fn status(code: u32) -> Vec<u8> {
+        let mut body = Vec::new();
+        put_u32(&mut body, code);
+        body
+    }
+
+    #[test]
+    fn a_listing_ends_at_the_servers_end() {
+        let mut replies = vec![
+            (FXP_NAME, names(2, "a")),
+            (FXP_NAME, names(1, "b")),
+            (FXP_STATUS, status(STATUS_EOF)),
+        ]
+        .into_iter();
+        let entries = collect_names(|| Ok(replies.next().unwrap())).unwrap();
+        assert_eq!(entries.len(), 3);
+    }
+
+    #[test]
+    fn a_server_listing_forever_is_cut_off() {
+        let mut sent = 0;
+        let result = collect_names(|| {
+            sent += 1;
+            assert!(sent < 1000, "still reading");
+            Ok((FXP_NAME, names(500, "f")))
+        });
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("100000 entries"), "{error}");
+    }
+
+    #[test]
+    fn a_server_that_never_finishes_is_cut_off() {
+        let mut sent = 0;
+        let result = collect_names(|| {
+            sent += 1;
+            assert!(sent < 1000, "still reading");
+            Ok((FXP_STATUS, status(0)))
+        });
+        assert!(result.is_err());
+        assert!(sent <= MAX_EMPTY_READS + 1);
     }
 
     #[test]

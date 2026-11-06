@@ -954,7 +954,10 @@ impl App {
             Command::ImportSshConfig => {
                 let path =
                     directories::BaseDirs::new().map(|d| d.home_dir().join(".ssh").join("config"));
-                match path.map(|p| std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))) {
+                match path.map(|p| {
+                    linecon_config::import::read_limited(&p)
+                        .map_err(|e| format!("{}: {e}", p.display()))
+                }) {
                     Some(Ok(data)) => {
                         let text = linecon_config::import::decode_text(&data);
                         self.finish_import(linecon_config::import::parse_ssh_config(&text));
