@@ -51,7 +51,7 @@ def main():
     open(os.path.join(home, "linecon.portable"), "w").close()
 
     device = FakeDevice()
-    app = Application(backend="uia").start(exe, timeout=30)
+    app = Application(backend="uia").start(exe, timeout=30, wait_for_idle=False)
     try:
         window = app.window(title="linecon0")
         window.wait("visible ready", timeout=60)
