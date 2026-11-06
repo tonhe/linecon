@@ -2073,7 +2073,7 @@ fn an_encrypted_openssh_key_asks_before_connecting() {
 #[test]
 fn a_failed_lookup_closes_only_that_session() {
     use crate::pane::{Pane, Status};
-    fn slow_failure(_: &str, _: u16) -> std::io::Result<()> {
+    fn slow_failure(_: &str, _: u16) -> std::io::Result<Vec<std::net::IpAddr>> {
         std::thread::sleep(std::time::Duration::from_secs(2));
         Err(std::io::Error::other("no such host"))
     }
@@ -2109,7 +2109,7 @@ fn a_slow_old_lookup_does_not_replace_the_newest_answer() {
     use crate::pane::{Pane, Status};
     use std::sync::atomic::{AtomicUsize, Ordering};
     static CALLS: AtomicUsize = AtomicUsize::new(0);
-    fn first_is_slow(_: &str, _: u16) -> std::io::Result<()> {
+    fn first_is_slow(_: &str, _: u16) -> std::io::Result<Vec<std::net::IpAddr>> {
         if CALLS.fetch_add(1, Ordering::SeqCst) == 0 {
             std::thread::sleep(std::time::Duration::from_millis(800));
             return Err(std::io::Error::other("old answer"));
@@ -2124,6 +2124,10 @@ fn a_slow_old_lookup_does_not_replace_the_newest_answer() {
     let mut pane = Pane::new(app.spec_for_test("sw", &target), std::sync::Arc::new(|| {}));
     pane.look_up = first_is_slow;
     pane.connect();
+    // The first connect's lookup has to be the slow one.
+    while CALLS.load(Ordering::SeqCst) == 0 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     pane.connect();
     // Both answers are in before the window looks, the old one last.
     std::thread::sleep(std::time::Duration::from_millis(1500));
@@ -2131,14 +2135,15 @@ fn a_slow_old_lookup_does_not_replace_the_newest_answer() {
     let Status::Closed { reason } = pane.status() else {
         panic!("the newest answer was lost and the session waits forever");
     };
-    assert!(reason.unwrap_or_default().contains("new answer"));
+    let reason = reason.unwrap_or_default();
+    assert!(reason.contains("new answer"), "{reason}");
 }
 
 #[test]
 fn a_jump_host_is_looked_up_before_the_shared_thread_sees_it() {
     use crate::pane::{Pane, Status};
     static ASKED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-    fn no_such_host(host: &str, _: u16) -> std::io::Result<()> {
+    fn no_such_host(host: &str, _: u16) -> std::io::Result<Vec<std::net::IpAddr>> {
         ASKED.lock().unwrap().push(host.to_string());
         Err(std::io::Error::other("no such host"))
     }

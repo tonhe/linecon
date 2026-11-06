@@ -45,8 +45,11 @@ pub struct PaneSpec {
 
 pub type PasswordLookup = Arc<dyn Fn() -> Option<Zeroizing<String>> + Send + Sync>;
 
-fn system_look_up(host: &str, port: u16) -> std::io::Result<()> {
-    (host, port).to_socket_addrs().map(|_| ())
+/// The addresses a name has, or why it could not be looked up.
+type LookupResult = Result<Vec<std::net::IpAddr>, String>;
+
+fn system_look_up(host: &str, port: u16) -> std::io::Result<Vec<std::net::IpAddr>> {
+    Ok((host, port).to_socket_addrs()?.map(|a| a.ip()).collect())
 }
 
 /// Asks the server what it offers, without making whoever is closing this pane wait for it.
@@ -115,7 +118,7 @@ pub struct PaneShared {
     retry_with_key: AtomicBool,
     /// Used to convert the key, then to answer PuTTY when it asks for the same thing.
     key_passphrase: Mutex<Option<Zeroizing<String>>>,
-    lookup_done: Mutex<Option<(u64, Result<(), String>)>>,
+    lookup_done: Mutex<Option<(u64, LookupResult)>>,
     /// The device only speaks SSH-1, and the legacy toggle allows it.
     pub wants_ssh1: AtomicBool,
 }
@@ -133,7 +136,7 @@ pub struct Pane {
     starting_ssh1_fallback: bool,
     lookup_generation: u64,
     waiting_on_lookup: Option<(u64, Settings)>,
-    pub look_up: fn(&str, u16) -> std::io::Result<()>,
+    pub look_up: fn(&str, u16) -> std::io::Result<Vec<std::net::IpAddr>>,
     pub reconnect_attempts: u32,
 }
 
@@ -251,8 +254,8 @@ impl Pane {
     }
 
     /// PuTTY looks names up on the one thread all sessions share, and waits. Doing it here
-    /// first means a dead DNS server fails this session alone, and PuTTY's own lookup finds
-    /// the answer cached when there is one.
+    /// first means a dead DNS server fails this session alone, and a slow one is waited on
+    /// once: PuTTY is handed the address when there is just one.
     fn look_up_first(&mut self, host: String, port: u16, settings: Settings) {
         let look_up = self.look_up;
         let generation = self.lookup_generation;
@@ -279,11 +282,14 @@ impl Pane {
         if generation != self.lookup_generation {
             return;
         }
-        let Some((_, settings)) = self.waiting_on_lookup.take() else {
+        let Some((_, mut settings)) = self.waiting_on_lookup.take() else {
             return;
         };
         match result {
-            Ok(()) => self.open_session(settings),
+            Ok(addresses) => {
+                settings.use_looked_up_address(&addresses);
+                self.open_session(settings)
+            }
             Err(reason) => {
                 *self.shared.status.lock().unwrap() = Status::Closed {
                     reason: Some(reason),

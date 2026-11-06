@@ -248,6 +248,38 @@ fn unknown_host_key_is_never_silently_accepted() {
 }
 
 #[test]
+fn a_looked_up_address_still_asks_about_the_key_by_name() {
+    let Some(server) = server() else { return };
+    let mut s = settings(server.group1_3des, &AlgorithmPolicy::legacy());
+    s.set("HostName", "legacy-box.test");
+    s.use_looked_up_address(&["127.0.0.1".parse().unwrap()]);
+    let session = Session::open(&s).expect("open");
+    let deadline = Instant::now() + TIMEOUT;
+    while Instant::now() < deadline {
+        match session.recv_timeout(Duration::from_millis(200)) {
+            Ok(Event::HostKey(prompt)) => {
+                assert!(
+                    prompt.description.contains("legacy-box.test"),
+                    "{}",
+                    prompt.description
+                );
+                assert!(
+                    !prompt.description.contains("127.0.0.1"),
+                    "{}",
+                    prompt.description
+                );
+                session.answer_hostkey(HostKeyVerdict::Reject);
+                return;
+            }
+            Ok(Event::Closed { reason, .. }) => panic!("closed before the key: {reason:?}"),
+            Ok(_) | Err(RecvError::Timeout) => {}
+            Err(RecvError::Disconnected) => panic!("engine went away"),
+        }
+    }
+    panic!("no host key prompt");
+}
+
+#[test]
 fn closing_during_host_key_prompt_is_clean() {
     let Some(server) = server() else { return };
     let s = settings(server.group1_3des, &AlgorithmPolicy::legacy());

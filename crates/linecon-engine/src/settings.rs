@@ -231,6 +231,27 @@ impl Settings {
         Some((host.to_string(), port))
     }
 
+    /// Connects straight to the address a caller already looked up, so PuTTY has no name to
+    /// look up on its shared thread. Host keys, GSSAPI and connection sharing still go by the
+    /// name, through LogHost. Only for one address on a direct connection: with several, PuTTY
+    /// tries each in turn, and a jump host is handled by its own settings.
+    pub fn use_looked_up_address(&mut self, addresses: &[std::net::IpAddr]) -> &mut Self {
+        let mut unique = addresses.to_vec();
+        unique.sort();
+        unique.dedup();
+        let direct = self.get("ProxyHost").is_none()
+            && self.get("LogHost").is_none_or(str::is_empty)
+            && self.get("Protocol") != Some("serial");
+        if let ([address], true) = (unique.as_slice(), direct) {
+            if let Some(name) = self.get("HostName").map(str::to_string) {
+                let port = self.get("PortNumber").unwrap_or("22").to_string();
+                self.set("LogHost", format!("{name}:{port}"))
+                    .set("HostName", address.to_string());
+            }
+        }
+        self
+    }
+
     pub fn algorithms(&mut self, policy: &AlgorithmPolicy) -> &mut Self {
         for (key, value) in policy.to_settings() {
             self.set(key, value);
@@ -304,6 +325,37 @@ mod tests {
         let mut serial = Settings::ssh("sw1.example", 22, "me");
         serial.set("Protocol", "serial");
         assert_eq!(serial.name_to_look_up(), None);
+    }
+
+    #[test]
+    fn one_looked_up_address_is_used_and_the_name_kept_for_host_keys() {
+        let v4: std::net::IpAddr = "192.0.2.7".parse().unwrap();
+        let v6: std::net::IpAddr = "2001:db8::7".parse().unwrap();
+        let mut settings = Settings::ssh("sw1.example", 2222, "me");
+        settings.use_looked_up_address(&[v4, v4]);
+        assert_eq!(settings.get("HostName"), Some("192.0.2.7"));
+        assert_eq!(settings.get("LogHost"), Some("sw1.example:2222"));
+
+        let mut both = Settings::ssh("sw1.example", 22, "me");
+        both.use_looked_up_address(&[v6, v4]);
+        assert_eq!(
+            both.get("HostName"),
+            Some("sw1.example"),
+            "PuTTY falls back from one address to the next"
+        );
+        assert_eq!(both.get("LogHost"), None);
+
+        let mut v6_only = Settings::ssh("sw1.example", 22, "me");
+        v6_only.use_looked_up_address(&[v6]);
+        assert_eq!(v6_only.get("HostName"), Some("2001:db8::7"));
+
+        let mut jumped = Settings::ssh("sw1.example", 22, "me");
+        jumped.via_jump_host(
+            &JumpHost::parse("bastion.example").unwrap(),
+            &Settings::ssh("ignored", 1, "me"),
+        );
+        jumped.use_looked_up_address(&[v4]);
+        assert_eq!(jumped.get("HostName"), Some("sw1.example"));
     }
 
     #[test]
