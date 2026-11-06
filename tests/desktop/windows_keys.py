@@ -9,56 +9,18 @@ Needs: pip install pywinauto
 """
 import os
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 
 from pywinauto import Application, keyboard
 
-received = bytearray()
-lock = threading.Lock()
-connected = threading.Event()
-closed = threading.Event()
+from fake_device import FakeDevice
 
 
-def serve(listener):
-    conn, _ = listener.accept()
-    connected.set()
-    conn.sendall(b"test device ready\r\nrouter> ")
-    while True:
-        data = conn.recv(4096)
-        if not data:
-            closed.set()
-            return
-        with lock:
-            received.extend(data)
-
-
-def take():
-    with lock:
-        data = bytes(received)
-        received.clear()
-    return data
-
-
-def expect(name, keys, wanted, settle=1.5):
-    """Presses `keys` and checks the device got exactly `wanted`, nothing more."""
-    take()
-    keyboard.send_keys(keys, pause=0.05, with_spaces=True)
-    deadline = time.time() + 8
-    while time.time() < deadline:
-        time.sleep(0.1)
-        with lock:
-            if len(received) >= max(len(wanted), 1):
-                break
-    time.sleep(settle)
-    got = take()
-    ok = got == wanted
-    print(f"{'PASS' if ok else 'FAIL'}  {name}: sent {got!r}" + ("" if ok else f", wanted {wanted!r}"))
-    return ok
+def keys(sequence):
+    return lambda: keyboard.send_keys(sequence, pause=0.05, with_spaces=True)
 
 
 def set_clipboard(text):
@@ -88,59 +50,46 @@ def main():
     shutil.copy(source, exe)
     open(os.path.join(home, "linecon.portable"), "w").close()
 
-    listener = socket.socket()
-    listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
-    port = listener.getsockname()[1]
-    threading.Thread(target=serve, args=(listener,), daemon=True).start()
-
+    device = FakeDevice()
     app = Application(backend="uia").start(exe, timeout=30)
-    results = []
     try:
         window = app.window(title="linecon0")
         window.wait("visible ready", timeout=60)
         window.set_focus()
         quick = window.child_window(title="Quick connect", control_type="Edit")
         quick.wait("visible", timeout=30)
-        results.append(("the quick connect box has its name", True))
-        print("PASS  the quick connect box has its name")
+        device.record("the quick connect box has its name", True)
         quick.click_input()
-        keyboard.send_keys(f"raw://127.0.0.1:{port}" + "{ENTER}", pause=0.03)
-        if not connected.wait(20):
-            print("FAIL  the raw session never connected")
-            return 1
+        keyboard.send_keys(f"raw://127.0.0.1:{device.port}" + "{ENTER}", pause=0.03)
+        if not device.connected.wait(20):
+            device.record("the raw session connects", False)
+            if shot:
+                screenshot(shot)
+            return device.report()
         time.sleep(2)
-        checks = [
-            ("plain typing", "show{SPACE}clock", b"show clock"),
-            ("Enter", "{ENTER}", b"\r"),
-            ("Backspace", "{BACKSPACE}", b"\x7f"),
-            ("Ctrl+C interrupts the device", "^c", b"\x03"),
-            ("Ctrl+V goes to the device", "^v", b"\x16"),
-            ("Alt+x arrives once, with Escape", "%x", b"\x1bx"),
-            ("arrow up", "{UP}", b"\x1b[A"),
-            ("Delete", "{DEL}", b"\x1b[3~"),
-            ("Shift+Delete is Delete, not cut", "+{DEL}", b"\x1b[3;2~"),
-            ("Ctrl+Insert copies and sends nothing", "^{INSERT}", b""),
-            ("Ctrl+Shift+K opens the finder, not the device", "^+k", b""),
-            ("Escape closes the finder", "{ESC}", b""),
-        ]
-        for name, keys, wanted in checks:
-            results.append((name, expect(name, keys, wanted)))
+        device.check("plain typing", keys("show clock"), b"show clock")
+        device.check("Enter", keys("{ENTER}"), b"\r")
+        device.check("Backspace", keys("{BACKSPACE}"), b"\x7f")
+        device.check("Ctrl+C interrupts the device", keys("^c"), b"\x03")
+        device.check("Ctrl+V goes to the device", keys("^v"), b"\x16")
+        device.check("Alt+x arrives once, with Escape", keys("%x"), b"\x1bx")
+        device.check("arrow up", keys("{UP}"), b"\x1b[A")
+        device.check("Delete", keys("{DEL}"), b"\x1b[3~")
+        device.check("Shift+Delete is Delete, not cut", keys("+{DEL}"), b"\x1b[3;2~")
+        device.check("Ctrl+Insert copies and sends nothing", keys("^{INSERT}"), b"")
+        device.check("Ctrl+Shift+K opens the finder, not the device", keys("^+k"), b"")
+        device.check("Escape closes the finder", keys("{ESC}"), b"")
         set_clipboard("pasted-line")
-        results.append(("Shift+Insert pastes", expect("Shift+Insert pastes", "+{INSERT}", b"pasted-line")))
-        results.append(("Ctrl+Shift+V pastes", expect("Ctrl+Shift+V pastes", "^+v", b"pasted-line")))
+        device.check("Shift+Insert pastes", keys("+{INSERT}"), b"pasted-line")
+        device.check("Ctrl+Shift+V pastes", keys("^+v"), b"pasted-line")
         if shot:
             screenshot(shot)
-        keyboard.send_keys("^+w")
-        ok = closed.wait(10)
-        print(f"{'PASS' if ok else 'FAIL'}  Ctrl+Shift+W closes the session")
-        results.append(("close", ok))
+        keys("^+w")()
+        device.check_closed("Ctrl+Shift+W closes the session")
     finally:
         app.kill()
         shutil.rmtree(home, ignore_errors=True)
-    failed = [n for n, ok in results if not ok]
-    print(f"{len(results) - len(failed)} passed, {len(failed)} failed")
-    return 1 if failed else 0
+    return device.report()
 
 
 if __name__ == "__main__":

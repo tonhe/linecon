@@ -84,12 +84,15 @@ jobs:
       - name: Open the real window
         shell: bash
         run: packaging/smoke.sh
-      - name: Real key presses in the real window
+      - name: Real key presses in the real window (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
           python -m pip install --quiet pywinauto==0.6.9
           python tests/desktop/windows_keys.py target/release/linecon.exe keys-screen.png
+      - name: Real key presses in the real window (macOS)
+        if: runner.os == 'macOS'
+        run: python3 tests/desktop/mac_keys.py target/release/linecon keys-screen.png
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
