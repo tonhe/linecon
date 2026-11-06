@@ -171,6 +171,10 @@ impl App {
         self.open_saved(id);
     }
 
+    pub fn open_manager_for_test(&mut self) {
+        self.manager_open = true;
+    }
+
     pub fn agent_log_for_test(&self) -> std::path::PathBuf {
         self.agent_log_file()
     }

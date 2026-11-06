@@ -239,6 +239,9 @@ impl App {
                         .desired_width(170.0)
                         .frame(Frame::new());
                     let response = ui.add(edit);
+                    ui.ctx().accesskit_node_builder(response.id, |node| {
+                        node.set_label("Search scrollback")
+                    });
                     let enter = response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                     if response.changed() {
                         entry.search.current = None;

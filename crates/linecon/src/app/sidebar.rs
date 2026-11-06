@@ -349,6 +349,9 @@ impl App {
                 .hint_text("user@host:port")
                 .desired_width(f32::INFINITY),
         );
+        // The placeholder is not read out, so the box needs a name of its own.
+        ui.ctx()
+            .accesskit_node_builder(response.id, |node| node.set_label("Quick connect"));
         if response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
             let text = self.quick_connect.clone();
             if parse_quick_connect(&text).is_some() {

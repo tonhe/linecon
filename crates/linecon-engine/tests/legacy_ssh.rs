@@ -516,6 +516,35 @@ fn local_and_dynamic_forwards_carry_traffic() {
 }
 
 #[test]
+fn a_remote_forward_carries_traffic_back() {
+    use std::io::Read;
+    let Some(server) = server() else { return };
+    // Something listening here, reached from inside the container through the forward.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let here = listener.local_addr().unwrap().port();
+    let forward = PortForward::parse(&format!("R9100 127.0.0.1:{here}")).unwrap();
+    let mut s = settings(server.group1_3des, &AlgorithmPolicy::legacy());
+    s.set("PortForwardings", PortForward::to_setting(&[forward]));
+    let (session, _) = log_in(&s);
+    // A moment for the server to start listening, then a connection from its side.
+    session.send(b"sleep 1; bash -c 'echo REMOTE-OK > /dev/tcp/127.0.0.1/9100'\n");
+    let session = keep_pumping(session);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut text = String::new();
+            let _ = stream.read_to_string(&mut text);
+            let _ = tx.send(text);
+        }
+    });
+    let got = rx
+        .recv_timeout(TIMEOUT)
+        .expect("nothing came back through the forward");
+    assert_eq!(got.trim(), "REMOTE-OK");
+    drop(session);
+}
+
+#[test]
 fn a_changed_host_key_is_never_accepted_silently() {
     use linecon_engine::hostkeys::{HostKeyLookup, HostKeyStore};
     /// Claims every key seen under this name has changed. Other tests use an IP.

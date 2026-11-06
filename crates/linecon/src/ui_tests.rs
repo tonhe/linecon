@@ -3474,3 +3474,76 @@ fn a_proposal_can_be_changed_before_it_is_sent_and_every_call_is_logged() {
     assert_eq!(read["session"], id);
     assert!(read.get("text").is_none(), "{read}");
 }
+
+/// Every control a screen reader can land on says what it is. Walks the accessibility tree
+/// of the main screens and fails on any button, field or choice with no name.
+#[test]
+fn every_control_has_a_name_for_screen_readers() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::By;
+    fn unnamed(h: &Harness<'static, App>, screen: &str) -> Vec<String> {
+        let interactive = [
+            Role::Button,
+            Role::CheckBox,
+            Role::RadioButton,
+            Role::TextInput,
+            Role::MultilineTextInput,
+            Role::PasswordInput,
+            Role::ComboBox,
+            Role::Slider,
+            Role::SpinButton,
+            Role::Link,
+            Role::Tab,
+        ];
+        h.query_all(By::new().predicate(move |node| {
+            interactive.contains(&node.role())
+                && node.label().is_none_or(|l| l.trim().is_empty())
+                && node.value().is_none_or(|v| v.trim().is_empty())
+        }))
+        .map(|node| {
+            use egui_kittest::kittest::NodeT;
+            let n = node.accesskit_node();
+            format!("{screen}: {:?} at {:?}", n.role(), n.bounding_box())
+        })
+        .collect()
+    }
+    let s = sample();
+    let core_sw = s.core_sw;
+    let mut app = s.app;
+    app.add_demo_tab("core-sw1", Some(core_sw), SHOW_VERSION);
+    let mut h = harness(app);
+    h.run_steps(3);
+    let mut found = unnamed(&h, "main window");
+
+    h.state_mut().inspect(core_sw);
+    h.run_steps(3);
+    found.extend(unnamed(&h, "session settings"));
+    for section in ["Terminal", "Logging", "SSH"] {
+        if let Some(tab) = h.query_by_label(section) {
+            tab.click();
+            h.run_steps(3);
+            found.extend(unnamed(&h, section));
+        }
+    }
+
+    h.state_mut().open_about_for_test();
+    h.run_steps(3);
+    found.extend(unnamed(&h, "about"));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+
+    h.state_mut().start_new_session_in_selection_for_test();
+    h.run_steps(3);
+    found.extend(unnamed(&h, "new session"));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+
+    h.state_mut().open_manager_for_test();
+    h.run_steps(4);
+    found.extend(unnamed(&h, "session manager"));
+    assert!(
+        found.is_empty(),
+        "controls with no name:\n{}",
+        found.join("\n")
+    );
+}

@@ -102,6 +102,9 @@ impl App {
                             .hint_text("Search sessions")
                             .desired_width(ui.available_width() * 0.55),
                     );
+                    ui.ctx().accesskit_node_builder(search.id, |node| {
+                        node.set_label("Search sessions")
+                    });
                     if search.changed() {
                         self.manager_pick = 0;
                     }
@@ -119,6 +122,9 @@ impl App {
                             .hint_text("user@host:port")
                             .desired_width(f32::INFINITY),
                     );
+                    // The placeholder is not read out, so the box needs a name of its own.
+                    ui.ctx()
+                        .accesskit_node_builder(connect.id, |node| node.set_label("Quick connect"));
                     if connect.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                         let text = self.quick_connect.clone();
                         if self.quick_connect_to(&text) {
