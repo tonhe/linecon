@@ -15,6 +15,20 @@ use winit::window::{Window, WindowId};
 use crate::app::App;
 use crate::cpu_paint::Painter;
 
+/// What wakes the event loop besides the window: egui asking for a frame later, or a
+/// screen reader.
+#[derive(Debug)]
+enum Wake {
+    Repaint(Duration),
+    Accessibility(accesskit_winit::Event),
+}
+
+impl From<accesskit_winit::Event> for Wake {
+    fn from(event: accesskit_winit::Event) -> Self {
+        Wake::Accessibility(event)
+    }
+}
+
 /// What `--smoke-test` needs: how many frames to draw before writing this file and leaving.
 pub struct Smoke {
     pub file: std::path::PathBuf,
@@ -32,7 +46,7 @@ struct Runner {
     app: App,
     ctx: egui::Context,
     builder: egui::ViewportBuilder,
-    proxy: EventLoopProxy<Duration>,
+    proxy: EventLoopProxy<Wake>,
     open: Option<Open>,
     painter: Painter,
     /// What is on screen, to send only what changed: this may be going over remote desktop.
@@ -104,7 +118,7 @@ impl Runner {
         let context = softbuffer::Context::new(window.clone()).map_err(|e| e.to_string())?;
         let surface =
             softbuffer::Surface::new(&context, window.clone()).map_err(|e| e.to_string())?;
-        let state = egui_winit::State::new(
+        let mut state = egui_winit::State::new(
             self.ctx.clone(),
             ViewportId::ROOT,
             event_loop,
@@ -112,6 +126,8 @@ impl Runner {
             window.theme(),
             Some(8192),
         );
+        // Before the window shows, as screen readers on Windows expect.
+        state.init_accesskit(event_loop, &window, self.proxy.clone());
         let mut info = ViewportInfo::default();
         egui_winit::update_viewport_info(&mut info, &self.ctx, &window, true);
         if let Some(placed) = &self.placed {
@@ -253,7 +269,7 @@ impl Runner {
     }
 }
 
-impl ApplicationHandler<Duration> for Runner {
+impl ApplicationHandler<Wake> for Runner {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.open.is_none() {
             if let Err(e) = self.open_window(event_loop) {
@@ -263,9 +279,29 @@ impl ApplicationHandler<Duration> for Runner {
         }
     }
 
-    fn user_event(&mut self, _: &ActiveEventLoop, delay: Duration) {
-        let at = Instant::now() + delay;
-        self.next_frame = Some(self.next_frame.map_or(at, |t| t.min(at)));
+    fn user_event(&mut self, _: &ActiveEventLoop, wake: Wake) {
+        match wake {
+            Wake::Repaint(delay) => {
+                let at = Instant::now() + delay;
+                self.next_frame = Some(self.next_frame.map_or(at, |t| t.min(at)));
+            }
+            Wake::Accessibility(event) => {
+                use accesskit_winit::WindowEvent as Ax;
+                match event.window_event {
+                    // A screen reader asked: from now on egui describes every frame.
+                    Ax::InitialTreeRequested => self.ctx.enable_accesskit(),
+                    Ax::ActionRequested(request) => {
+                        if let Some(open) = self.open.as_mut() {
+                            open.state.on_accesskit_action_request(request);
+                        }
+                    }
+                    Ax::AccessibilityDeactivated => self.ctx.disable_accesskit(),
+                }
+                if let Some(open) = &self.open {
+                    open.window.request_redraw();
+                }
+            }
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
@@ -321,7 +357,7 @@ pub fn run(
     smoke: Option<Smoke>,
     place_file: Option<std::path::PathBuf>,
 ) -> Result<(), String> {
-    let event_loop = EventLoop::<Duration>::with_user_event()
+    let event_loop = EventLoop::<Wake>::with_user_event()
         .build()
         .map_err(|e| e.to_string())?;
     let ctx = egui::Context::default();
@@ -330,7 +366,7 @@ pub fn run(
     let proxy = event_loop.create_proxy();
     let wake = proxy.clone();
     ctx.set_request_repaint_callback(move |info| {
-        let _ = wake.send_event(info.delay);
+        let _ = wake.send_event(Wake::Repaint(info.delay));
     });
     app.set_software_rendering(&ctx);
     app.set_renderer_info("Drawn by the processor, as this computer has no GPU".to_string());

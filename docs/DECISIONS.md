@@ -249,3 +249,17 @@ repository. It is still never patched: `packaging/putty.sh check` compares git's
 tree for that commit, in a workflow of its own so that a release never waits for that server, and
 `packaging/putty.sh update <commit>` is the only way it changes. A separate mirror repository was considered and not
 wanted.
+
+## 2026-11-06: With no GPU, the session manager stays a panel
+
+Screen readers now work on the no-GPU window: it connects egui's accessibility tree the same way eframe does. The
+session manager there is still a panel inside the main window, not a window of its own. A second window would mean the
+runner managing several windows, surfaces and damage buffers, for a machine where every pixel is already painted by the
+processor. The panel does everything the window does, and nothing about it depends on being separate.
+
+## 2026-11-06: Window state lives beside the config
+
+Window size and place, the selected row, the sidebar and which saved sessions were open are kept in `window.ron`,
+`window-cpu.json` and `window-state.json` next to `config.toml`, not in it. They describe one machine's window, and the
+config may be copied or synced between machines. Sessions that were open are offered on the empty window, and never
+reconnect on their own: a device should not see a login nobody asked for.
