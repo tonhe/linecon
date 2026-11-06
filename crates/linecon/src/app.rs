@@ -45,6 +45,7 @@ mod menus;
 mod overlays;
 mod panes;
 mod remembered;
+mod saver;
 mod sidebar;
 #[cfg(test)]
 mod test_hooks;
@@ -226,6 +227,7 @@ pub struct App {
     config_error: Option<String>,
     save_error: Option<String>,
     last_failed_save: Option<Instant>,
+    saver: saver::Saver,
     /// Held for as long as this window owns the config folder.
     _instance_lock: Option<std::fs::File>,
     vault: Arc<Mutex<Vault>>,
@@ -511,6 +513,7 @@ impl App {
             config_error,
             save_error: None,
             last_failed_save: None,
+            saver: saver::Saver::default(),
             _instance_lock: instance_lock.flatten(),
             error: known_hosts_error,
             info: None,
@@ -605,17 +608,57 @@ impl App {
         {
             return;
         }
+        // Encoding is quick. The write waits for the disk, so it happens on the saver's thread.
+        match linecon_config::encode(&self.config) {
+            Ok(text) => {
+                let repaint = self.repaint.clone().unwrap_or_else(|| Arc::new(|| {}));
+                self.saver.send(self.location.config_file(), text, repaint);
+                self.dirty = false;
+            }
+            Err(e) => self.save_failed(e.to_string()),
+        }
+    }
+
+    fn save_failed(&mut self, error: String) {
+        self.last_failed_save = Some(Instant::now());
+        self.save_error = Some(format!("Could not save settings, retrying: {error}"));
+        // Tried again after a pause, with whatever has changed since.
+        self.dirty = true;
+    }
+
+    /// Takes in how the newest save went.
+    fn check_saved(&mut self) {
+        match self.saver.take_finished() {
+            Some(Ok(())) => {
+                self.last_failed_save = None;
+                self.save_error = None;
+            }
+            Some(Err(e)) => self.save_failed(e),
+            None => {}
+        }
+    }
+
+    /// Saves and waits for the disk, for when the program is about to stop or restart.
+    fn save_now(&mut self) {
+        if let Some(Err(e)) = self.saver.wait(Duration::from_secs(10)) {
+            self.save_failed(e);
+        }
+        if !self.dirty || self.config_error.is_some() {
+            return;
+        }
         match linecon_config::save(&self.location.config_file(), &self.config) {
             Ok(()) => {
                 self.dirty = false;
                 self.last_failed_save = None;
                 self.save_error = None;
             }
-            Err(e) => {
-                self.last_failed_save = Some(Instant::now());
-                self.save_error = Some(format!("Could not save settings, retrying: {e}"));
-            }
+            Err(e) => self.save_failed(e.to_string()),
         }
+    }
+
+    /// Changes not yet on disk, for the "Saving…" note.
+    fn saving(&self) -> bool {
+        self.dirty || self.saver.in_flight()
     }
 
     fn focused_pane(&self) -> Option<PaneId> {
@@ -1075,7 +1118,7 @@ impl App {
     }
 
     pub fn save_before_exit(&mut self) {
-        self.save_if_needed();
+        self.save_now();
         self.save_remembered();
     }
 
@@ -1116,6 +1159,7 @@ impl App {
         }
         let chrome = Chrome::from_theme(&chrome_theme);
 
+        self.check_saved();
         self.handle_shortcuts(&ctx);
         self.import_dropped_themes(&ctx);
         self.continue_reopening();

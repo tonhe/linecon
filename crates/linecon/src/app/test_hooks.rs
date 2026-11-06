@@ -183,6 +183,18 @@ impl App {
         self.sidebar_open = false;
     }
 
+    pub fn open_unlock_for_test(&mut self) {
+        self.unlock = Some(Unlock::default());
+    }
+
+    pub fn unlock_error_for_test(&self) -> Option<String> {
+        self.unlock.as_ref().and_then(|u| u.error.clone())
+    }
+
+    pub fn vault_locked_for_test(&self) -> bool {
+        self.vault.lock().unwrap().is_locked()
+    }
+
     pub fn tab_count_for_test(&self) -> usize {
         self.tabs.len()
     }
@@ -204,8 +216,17 @@ impl App {
         self.dirty = true;
     }
 
+    /// The ordinary save, through the saver's thread, then waits for it.
     pub fn save_for_test(&mut self) {
         self.save_if_needed();
+        match self.saver.wait(std::time::Duration::from_secs(10)) {
+            Some(Ok(())) => {
+                self.save_error = None;
+                self.last_failed_save = None;
+            }
+            Some(Err(e)) => self.save_failed(e),
+            None => {}
+        }
     }
 
     pub fn config_error_clear_for_test(&mut self) {

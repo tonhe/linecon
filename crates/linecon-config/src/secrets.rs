@@ -321,6 +321,17 @@ impl Vault {
         Ok(())
     }
 
+    /// The encrypted file this vault opens. Opening it is slow on purpose, so a window
+    /// does it with `EncryptedFile::open` on another thread and hands the result to
+    /// `unlock_with`.
+    pub fn file(&self) -> &Path {
+        &self.file
+    }
+
+    pub fn unlock_with(&mut self, opened: EncryptedFile) {
+        self.store = Some(Box::new(opened));
+    }
+
     /// Nothing is found while locked, so the caller falls back to asking.
     pub fn get(&self, key: &str) -> Option<Zeroizing<String>> {
         self.store.as_ref()?.get(key).ok().flatten()

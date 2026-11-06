@@ -15,6 +15,12 @@ pub(super) struct Unlock {
     pub(super) then_open: Option<Id>,
     /// A password waiting to be stored once the vault is open.
     pub(super) then_save: Option<(Id, Zeroizing<String>, Option<PaneId>)>,
+    /// The vault file being opened. Deriving its key takes a deliberate second or so.
+    pub(super) opening: Option<
+        std::sync::mpsc::Receiver<
+            Result<linecon_config::secrets::EncryptedFile, linecon_config::secrets::SecretError>,
+        >,
+    >,
 }
 
 impl App {
@@ -362,6 +368,28 @@ impl App {
         let is_new = self.vault.lock().unwrap().is_new();
         let mut submit = false;
         let mut cancel = false;
+        if let Some(opening) = &unlock.opening {
+            match opening.try_recv() {
+                Ok(Ok(file)) => {
+                    self.vault.lock().unwrap().unlock_with(file);
+                    unlock.opening = None;
+                    cancel = true;
+                }
+                Ok(Err(e)) => {
+                    unlock.error = Some(e.to_string());
+                    unlock.passphrase.clear();
+                    unlock.opening = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(50));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    unlock.error = Some("Could not open saved passwords.".to_string());
+                    unlock.opening = None;
+                }
+            }
+        }
+        let working = unlock.opening.is_some();
         let screen = ctx.content_rect();
         egui::Area::new(egui::Id::unique("linecon-unlock"))
             .order(egui::Order::Foreground)
@@ -380,26 +408,42 @@ impl App {
                         .password(true)
                         .id(egui::Id::unique("linecon-unlock-input"))
                         .desired_width(f32::INFINITY);
-                    let response = ui.add(edit).labelled_by(label);
-                    response.request_focus();
+                    let response = ui.add_enabled(!working, edit).labelled_by(label);
+                    if !working {
+                        response.request_focus();
+                    }
                     if let Some(error) = &unlock.error {
                         ui.label(RichText::new(error).color(chrome.danger));
                     }
                     ui.horizontal(|ui| {
-                        submit = ui.button("Unlock").clicked() || ui.input(|i| i.key_pressed(Key::Enter));
-                        cancel = ui.button("Skip").clicked() || ui.input(|i| i.key_pressed(Key::Escape));
+                        if working {
+                            ui.spinner();
+                            ui.label(RichText::new("Unlocking…").color(chrome.muted));
+                        } else {
+                            submit = ui.button("Unlock").clicked()
+                                || ui.input(|i| i.key_pressed(Key::Enter));
+                        }
+                        cancel = cancel
+                            || ui.button("Skip").clicked()
+                            || ui.input(|i| i.key_pressed(Key::Escape));
                     });
                 });
             });
-        if submit && !unlock.passphrase.is_empty() {
-            let result = self.vault.lock().unwrap().unlock(&unlock.passphrase);
-            match result {
-                Ok(()) => cancel = true,
-                Err(e) => {
-                    unlock.error = Some(e.to_string());
-                    unlock.passphrase.clear();
-                }
-            }
+        if submit && !working && !unlock.passphrase.is_empty() {
+            // Off this thread, so the window keeps drawing while the key is derived.
+            let file = self.vault.lock().unwrap().file().to_path_buf();
+            let passphrase = unlock.passphrase.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let repaint = ctx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(linecon_config::secrets::EncryptedFile::open(
+                    &file,
+                    &passphrase,
+                ));
+                repaint.request_repaint();
+            });
+            unlock.opening = Some(rx);
+            unlock.error = None;
         }
         if cancel {
             ctx.memory_mut(|m| m.surrender_focus(egui::Id::unique("linecon-unlock-input")));

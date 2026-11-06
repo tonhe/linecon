@@ -224,7 +224,7 @@ impl App {
             Some(Choice::Dismiss) => self.update_state = UpdateState::Idle,
             Some(Choice::Restart) => {
                 // The new copy reads the file as soon as it starts.
-                self.save_if_needed();
+                self.save_now();
                 let started = update::program_path().and_then(|exe| update::restart(&exe));
                 match started {
                     Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),

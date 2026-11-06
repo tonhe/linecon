@@ -12,4 +12,4 @@ mod store;
 pub use model::*;
 pub use paths::{ConfigLocation, Mode, PORTABLE_MARKER};
 pub use resolve::{Inherited, Resolved, Source};
-pub use store::{load, save, StoreError};
+pub use store::{encode, load, save, write, StoreError};

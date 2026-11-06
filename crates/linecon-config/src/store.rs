@@ -41,7 +41,16 @@ pub fn load(path: &Path) -> Result<Config, StoreError> {
 
 /// Saves through a temporary file, so a crash cannot leave half a config.
 pub fn save(path: &Path, config: &Config) -> Result<(), StoreError> {
-    let text = toml::to_string_pretty(config).map_err(|e| StoreError::Encode(e.to_string()))?;
+    write(path, &encode(config)?)
+}
+
+/// The config as it is written to disk. Quick, unlike the write, which waits for the disk.
+pub fn encode(config: &Config) -> Result<String, StoreError> {
+    toml::to_string_pretty(config).map_err(|e| StoreError::Encode(e.to_string()))
+}
+
+/// Writes encoded config through a temporary file, waiting until it is on disk.
+pub fn write(path: &Path, text: &str) -> Result<(), StoreError> {
     let io_err = |e| StoreError::Io(path.to_path_buf(), e);
     if let Some(dir) = path.parent() {
         linecon_engine::private_files::create_dir(dir).map_err(io_err)?;

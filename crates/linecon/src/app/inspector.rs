@@ -802,7 +802,7 @@ impl App {
             ui.with_layout(UiLayout::right_to_left(Align::Center), |ui| {
                 let status = if self.save_error.is_some() {
                     RichText::new("Not saved").color(chrome.danger)
-                } else if self.dirty {
+                } else if self.saving() {
                     RichText::new("Saving…").color(chrome.muted)
                 } else {
                     RichText::new("Changes are saved").color(chrome.muted)

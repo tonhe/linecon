@@ -2765,7 +2765,32 @@ fn changes_save_after_a_pause() {
     assert!(!saved(&place).contains("update_checks"), "saved at once");
     std::thread::sleep(std::time::Duration::from_millis(700));
     h.run_steps(2);
-    assert!(saved(&place).contains("update_checks"), "never saved");
+    // The write itself happens on the saver's thread.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !saved(&place).contains("update_checks") {
+        assert!(std::time::Instant::now() < deadline, "never saved");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn saving_on_exit_waits_for_the_write() {
+    let place = location();
+    let mut app = App::new(place.clone());
+    app.set_update_checks(Some(false));
+    app.mark_dirty_for_test();
+    let started = std::time::Instant::now();
+    let mut h = harness(app);
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    h.run_steps(2);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "the window waited"
+    );
+    // Saving on exit still waits, so nothing is lost.
+    h.state_mut().save_before_exit();
+    let text = std::fs::read_to_string(place.config_file()).unwrap();
+    assert!(text.contains("update_checks"));
 }
 
 fn open_new_session(h: &mut Harness<'static, App>) {
@@ -3222,4 +3247,53 @@ fn alt_and_a_letter_reaches_the_peer_once() {
         "{:?}",
         String::from_utf8_lossy(&seen)
     );
+}
+
+#[test]
+fn unlocking_saved_passwords_keeps_the_window_drawing() {
+    let place = location();
+    // A vault file made earlier with a known passphrase.
+    std::fs::create_dir_all(&place.dir).unwrap();
+    let mut made = linecon_config::secrets::EncryptedFile::open(&place.secrets_file(), "right")
+        .expect("create");
+    use linecon_config::secrets::SecretStore;
+    made.set("probe", "value").unwrap();
+    drop(made);
+
+    let mut app = App::new(place);
+    assert!(app.vault_locked_for_test(), "portable mode starts locked");
+    app.open_unlock_for_test();
+    let mut h = harness(app);
+    h.run_steps(2);
+
+    h.get_by_role(egui::accesskit::Role::PasswordInput)
+        .type_text("wrong");
+    h.run_steps(1);
+    h.get_by_label("Unlock").click();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while h.state().unlock_error_for_test().is_none() {
+        assert!(std::time::Instant::now() < deadline, "no error shown");
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(h.state().vault_locked_for_test());
+
+    h.get_by_role(egui::accesskit::Role::PasswordInput)
+        .type_text("right");
+    h.run_steps(1);
+    h.get_by_label("Unlock").click();
+    h.step();
+    let mut saw_working = false;
+    while h.state().vault_locked_for_test() {
+        assert!(std::time::Instant::now() < deadline, "never unlocked");
+        saw_working |= h.query_by_label("Unlocking…").is_some();
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        saw_working,
+        "the window did not draw while the key was derived"
+    );
+    h.run_steps(2);
+    assert!(h.query_by_label("Unlock saved passwords").is_none());
 }
