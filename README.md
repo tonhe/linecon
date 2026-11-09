@@ -113,6 +113,7 @@ instruct the agent, so everything is opt-in:
   mouse. Proposals expire after five minutes or on disconnect.
 - Every agent call, reads included, is added to `agent-log.jsonl` in the settings folder, one JSON object per line
   with the time. It records what was proposed, sent and decided, and that a screen was read, never what was on it.
+  Values after words such as `password`, `secret`, `key-string` and `community` are written as `<redacted>`.
 - Full control lets it type without asking. That lasts until the connection drops, including an automatic reconnect,
   and the pane then goes back to asking.
 - A pane with access is marked on screen, and input is refused while it is waiting on a password.

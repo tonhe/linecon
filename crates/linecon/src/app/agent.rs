@@ -67,6 +67,9 @@ impl AgentView {
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_default();
         entry["time"] = serde_json::Value::String(time);
+        if let Some(text) = entry.get("text").and_then(|t| t.as_str()) {
+            entry["text"] = serde_json::Value::String(redact_secrets(text));
+        }
         let mut line = entry.to_string();
         line.push('\n');
         if std::io::Write::write_all(file, line.as_bytes()).is_err() {
@@ -429,6 +432,130 @@ impl App {
                     .resolve_proposal(proposal.id, "denied", None);
             }
             None => {}
+        }
+    }
+}
+
+/// Words in device configuration that a password, key or community string follows. What an
+/// agent types often configures devices, and the log should not keep those values.
+const SECRET_WORDS: [&str; 14] = [
+    "password",
+    "secret",
+    "key-string",
+    "community",
+    "pre-shared-key",
+    "authentication-key",
+    "encrypted-password",
+    "plain-text-password-value",
+    "md5",
+    "key",
+    "psk",
+    "passphrase",
+    "pass",
+    "passwd",
+];
+
+/// Encryption or hash types that can come between such a word and its value: "secret 5 ...",
+/// "secret sha512 ...", "key 7 ...".
+fn is_secret_type(word: &str) -> bool {
+    (word.len() == 1 && word.as_bytes()[0].is_ascii_digit())
+        || matches!(
+            word.to_ascii_lowercase().as_str(),
+            "sha512" | "sha256" | "nopassword-type" | "encrypted" | "hidden"
+        )
+}
+
+/// The text with the values after `SECRET_WORDS`, and after `password=`-style assignments,
+/// replaced by `<redacted>`. Spacing and everything else stay as they were.
+pub(super) fn redact_secrets(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    // 0: nothing pending; 1: the next word is a value, unless it is a type; 2: it is a value.
+    let mut pending = 0u8;
+    let mut rest = text;
+    while !rest.is_empty() {
+        let space = rest
+            .find(|c: char| !c.is_whitespace())
+            .unwrap_or(rest.len());
+        let (gap, after) = rest.split_at(space);
+        out.push_str(gap);
+        if gap.contains(['\r', '\n']) {
+            pending = 0;
+        }
+        let end = after.find(char::is_whitespace).unwrap_or(after.len());
+        let (word, tail) = after.split_at(end);
+        rest = tail;
+        if word.is_empty() {
+            break;
+        }
+        let lower = word.to_ascii_lowercase();
+        if pending == 1 && is_secret_type(word) {
+            out.push_str(word);
+            pending = 2;
+            continue;
+        }
+        if pending > 0 {
+            out.push_str("<redacted>");
+            pending = 0;
+            continue;
+        }
+        if let Some((name, value)) = word.split_once('=') {
+            let name = name.trim_start_matches('-').to_ascii_lowercase();
+            if !value.is_empty()
+                && SECRET_WORDS
+                    .iter()
+                    .any(|w| (name.ends_with(w) && *w != "key") || name == *w)
+            {
+                out.push_str(&word[..word.len() - value.len()]);
+                out.push_str("<redacted>");
+                continue;
+            }
+        }
+        out.push_str(word);
+        if SECRET_WORDS.contains(&lower.trim_matches('"')) {
+            pending = 1;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_secrets;
+
+    #[test]
+    fn values_after_secret_words_are_hidden() {
+        let cases = [
+            (
+                "username admin secret 0 Cisco123\r",
+                "username admin secret 0 <redacted>\r",
+            ),
+            (
+                "username admin privilege 15 password hunter2",
+                "username admin privilege 15 password <redacted>",
+            ),
+            (
+                "enable secret sha512 $6$abc",
+                "enable secret sha512 <redacted>",
+            ),
+            (
+                "snmp-server community public RO",
+                "snmp-server community <redacted> RO",
+            ),
+            (" key-string 7 0822455D0A16", " key-string 7 <redacted>"),
+            (
+                "set authentication-key \"s3cret\"",
+                "set authentication-key <redacted>",
+            ),
+            ("PGPASSWORD=hunter2 psql", "PGPASSWORD=<redacted> psql"),
+            ("tool --password=hunter2 x", "tool --password=<redacted> x"),
+            ("show ip interface brief\r", "show ip interface brief\r"),
+            (
+                "show run | include secret\r\nshow clock",
+                "show run | include secret\r\nshow clock",
+            ),
+        ];
+        for (text, wanted) in cases {
+            assert_eq!(redact_secrets(text), wanted, "{text:?}");
         }
     }
 }
