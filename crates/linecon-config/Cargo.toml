@@ -18,7 +18,7 @@ linecon-engine = { path = "../linecon-engine" }
 roxmltree = "0.21"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.11"
-toml = "0.9"
+toml = "1.1"
 zeroize = "1"
 
 # Pure Rust on Linux: linking libdbus would break the portable binary.
