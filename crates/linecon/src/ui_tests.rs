@@ -2844,11 +2844,12 @@ fn a_new_session_starts_in_its_name_and_tabs_stay_in_the_dialog() {
     }
 }
 
-/// Nothing exists until it is saved, and a selected session does not decide where it goes.
+/// Nothing exists until it is saved, and a selected top-level session keeps it there.
 #[test]
 fn a_new_session_saves_at_the_top_level_and_cancel_leaves_nothing() {
     let mut s = sample();
-    s.app.selected_node_for_test(s.core_sw);
+    let bench = session_named(&s.app, "Bench console").unwrap();
+    s.app.selected_node_for_test(bench);
     let before = s.app.config.nodes.len();
     let mut h = harness(s.app);
     h.run_steps(3);
@@ -2932,18 +2933,121 @@ fn settings_are_split_into_sections() {
 }
 
 #[test]
-fn only_a_selected_folder_decides_where_new_things_go() {
+fn new_things_go_in_the_selected_folder_or_the_selected_sessions_folder() {
     let mut s = sample();
     let folder = s.app.config.add_folder(None, "Lab").unwrap();
     assert_eq!(s.app.selected_folder_for_test(), None);
     s.app.selected_node_for_test(s.core_sw);
+    let core = s.app.config.parent_of(s.core_sw).unwrap();
+    assert!(core.is_some());
     assert_eq!(
         s.app.selected_folder_for_test(),
-        None,
-        "a session is no folder"
+        core,
+        "the session's folder"
     );
     s.app.selected_node_for_test(folder);
     assert_eq!(s.app.selected_folder_for_test(), Some(folder));
+    let bench = session_named(&s.app, "Bench console").unwrap();
+    s.app.selected_node_for_test(bench);
+    assert_eq!(s.app.selected_folder_for_test(), None, "top level");
+}
+
+/// Ctrl+C on a session row and Ctrl+V on a folder row make a copy there, and the copy has
+/// its own id, so changing it leaves the original alone.
+#[test]
+fn sessions_copy_and_paste_with_the_keyboard() {
+    let s = sample();
+    let original = session_named(&s.app, "br-sw1").unwrap();
+    let mut h = harness(s.app);
+    h.run_steps(3);
+    h.get_by_label("br-sw1").click();
+    h.run_steps(2);
+    h.event(egui::Event::Copy);
+    h.run_steps(2);
+    // What Ctrl+V reports is what the copy put on the clipboard.
+    let text = h.state().copied_text_for_test().expect("copied");
+    assert_eq!(text, "br-sw1");
+    h.get_by_label("Datacenter").click();
+    h.run_steps(2);
+    h.event(egui::Event::Paste(text.clone()));
+    h.run_steps(3);
+    let copy = session_named(h.state(), "br-sw1 (copy)");
+    assert!(copy.is_none(), "another folder, so the name is free");
+    let datacenter = h
+        .state()
+        .config
+        .nodes
+        .iter()
+        .find(|n| n.name() == "Datacenter")
+        .unwrap()
+        .id();
+    let ids: Vec<Id> = match h.state().config.find(datacenter).unwrap() {
+        linecon_config::Node::Folder(f) => f
+            .children
+            .iter()
+            .filter(|n| n.name() == "br-sw1")
+            .map(|n| n.id())
+            .collect(),
+        _ => unreachable!(),
+    };
+    assert_eq!(ids.len(), 1, "pasted into Datacenter");
+    assert_ne!(ids[0], original);
+
+    // Something else on the clipboard is not a request to paste sessions again.
+    h.event(egui::Event::Paste("show version".into()));
+    h.run_steps(3);
+    let count = |app: &App| {
+        fn walk(nodes: &[linecon_config::Node]) -> usize {
+            nodes
+                .iter()
+                .map(|n| match n {
+                    linecon_config::Node::Folder(f) => walk(&f.children),
+                    linecon_config::Node::Session(s) => usize::from(s.name.starts_with("br-sw1")),
+                })
+                .sum()
+        }
+        walk(&app.config.nodes)
+    };
+    assert_eq!(count(h.state()), 2);
+    screenshot(&mut h, "tree-pasted");
+}
+
+/// The login can be chosen while making the session, including a new one.
+#[test]
+fn a_new_session_can_pick_its_login() {
+    let mut s = sample();
+    let ops = s.app.config.add_identity("ops", "admin");
+    s.app.start_new_session_in_selection_for_test();
+    let mut h = harness(s.app);
+    h.run_steps(4);
+    h.get_by_label("Login").click();
+    h.run_steps(2);
+    h.get_by_label("ops").click();
+    h.run_steps(2);
+    h.get_by_label("Host").click();
+    h.run_steps(1);
+    h.event(egui::Event::Text("10.0.0.7".into()));
+    h.run_steps(2);
+    screenshot(&mut h, "new-session-login");
+    h.get_by_label("Save").click();
+    h.run_steps(3);
+    let id = session_named(h.state(), "10.0.0.7").unwrap();
+    assert_eq!(
+        h.state().config.session(id).unwrap().settings.identity,
+        Some(ops)
+    );
+
+    // A login made here and then cancelled is not left behind.
+    let before = h.state().config.identities.len();
+    h.state_mut().start_new_session_in_selection_for_test();
+    h.run_steps(3);
+    h.get_by_label("New login").click();
+    h.run_steps(2);
+    h.get_by_label("Username");
+    assert_eq!(h.state().config.identities.len(), before + 1);
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+    assert_eq!(h.state().config.identities.len(), before);
 }
 
 /// The first key after closing a field belongs to the device. Losing it turned `exit` into

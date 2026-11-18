@@ -419,6 +419,60 @@ impl Config {
         true
     }
 
+    /// The folder holding a node, `Some(None)` at the top level, `None` if it is absent.
+    pub fn parent_of(&self, id: Id) -> Option<Option<Id>> {
+        Some(self.ancestors(id)?.last().map(|f| f.id))
+    }
+
+    /// Copies a node, and everything beneath a folder, into `parent` with new ids.
+    /// The copy goes just after the original when they share a folder, and takes a
+    /// name no row beside it has. Returns the copy's id.
+    pub fn copy_node(&mut self, id: Id, parent: Option<Id>) -> Option<Id> {
+        fn renumber(config: &mut Config, node: &mut Node) {
+            match node {
+                Node::Session(s) => s.id = config.fresh_id(),
+                Node::Folder(f) => {
+                    f.id = config.fresh_id();
+                    for child in &mut f.children {
+                        renumber(config, child);
+                    }
+                }
+            }
+        }
+        let mut node = self.find(id)?.clone();
+        let original_parent = self.parent_of(id)?;
+        let siblings = self.children_mut(parent)?;
+        let taken = |name: &str| siblings.iter().any(|n| n.name() == name);
+        let base = node.name().to_string();
+        let mut name = base.clone();
+        let mut n = 1;
+        while taken(&name) {
+            name = if n == 1 {
+                format!("{base} (copy)")
+            } else {
+                format!("{base} (copy {n})")
+            };
+            n += 1;
+        }
+        renumber(self, &mut node);
+        match &mut node {
+            Node::Session(s) => s.name = name,
+            Node::Folder(f) => f.name = name,
+        }
+        let new_id = node.id();
+        let children = self.children_mut(parent)?;
+        let at = if original_parent == parent {
+            children
+                .iter()
+                .position(|n| n.id() == id)
+                .map_or(children.len(), |p| p + 1)
+        } else {
+            children.len()
+        };
+        children.insert(at, node);
+        Some(new_id)
+    }
+
     /// Folders from the root down to the node's parent. `None` if `id` is absent.
     pub fn ancestors(&self, id: Id) -> Option<Vec<&Folder>> {
         fn walk<'a>(nodes: &'a [Node], id: Id, path: &mut Vec<&'a Folder>) -> bool {
@@ -529,6 +583,45 @@ mod tests {
         assert_eq!(names(Some(sw)), ["global", "site-wide", "core-only"]);
         assert_eq!(names(Some(elsewhere)), ["global", "other-only"]);
         assert_eq!(names(None), ["global"]);
+    }
+
+    #[test]
+    fn copying_gives_new_ids_and_a_free_name() {
+        let mut c = Config::default();
+        let site = c.add_folder(None, "site").unwrap();
+        let sw1 = c.add_session(Some(site), "sw1", target()).unwrap();
+        let sw2 = c.add_session(Some(site), "sw2", target()).unwrap();
+        c.overrides_mut(sw1).unwrap().font_size = Some(15);
+
+        let copy = c.copy_node(sw1, Some(site)).unwrap();
+        let again = c.copy_node(sw1, Some(site)).unwrap();
+        let names = |c: &Config| -> Vec<String> {
+            match c.find(site).unwrap() {
+                Node::Folder(f) => f.children.iter().map(|n| n.name().to_string()).collect(),
+                Node::Session(_) => unreachable!(),
+            }
+        };
+        assert_eq!(names(&c), ["sw1", "sw1 (copy 2)", "sw1 (copy)", "sw2"]);
+        assert_ne!(copy, sw1);
+        assert_ne!(again, copy);
+        assert_eq!(c.session(copy).unwrap().settings.font_size, Some(15));
+        assert_eq!(c.parent_of(copy), Some(Some(site)));
+
+        // Into another folder, the name is free, so it stays.
+        let copied_site = c.copy_node(site, None).unwrap();
+        let Some(Node::Folder(f)) = c.find(copied_site) else {
+            panic!()
+        };
+        assert_eq!(f.name, "site (copy)");
+        assert_eq!(f.children.len(), 4);
+        assert!(f
+            .children
+            .iter()
+            .all(|n| ![sw1, sw2, copy, again].contains(&n.id())));
+        let other = c.add_folder(None, "other").unwrap();
+        let moved = c.copy_node(sw2, Some(other)).unwrap();
+        assert_eq!(c.session(moved).unwrap().name, "sw2");
+        assert_eq!(c.copy_node(sw2, Some(sw1)), None);
     }
 
     #[test]

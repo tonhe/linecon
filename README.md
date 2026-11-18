@@ -96,6 +96,10 @@ Drop an iTerm2 `.itermcolors` or Windows Terminal `.json` scheme on the window t
 
 ## Moving sessions
 
+In the sidebar, Ctrl+C (⌘C) on a session or folder copies it, and Ctrl+V (⌘V) on a folder, or on a session in it,
+pastes a copy there with all its settings. Right-click offers Copy, Paste and Duplicate too. A new session goes in the
+selected folder, or in the folder of the selected session, and its login can be picked or made in the same dialog.
+
 Export everything from the command palette, or one folder by right-clicking it, to a readable file described in
 [docs/session-format.md](docs/session-format.md). Drop that file on another window to import it. Folders and
 inherited settings come along, usernames and key paths only if you ask, and passwords never.

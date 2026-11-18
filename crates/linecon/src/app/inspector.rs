@@ -656,6 +656,10 @@ pub(super) struct NewSessionDraft {
     pub(super) name: String,
     pub(super) target: Target,
     pub(super) parent: Option<Id>,
+    /// The login it uses: `None` inherits from its folder, `Some(0)` asks each time.
+    pub(super) login: Option<Id>,
+    /// Logins made from this dialog, removed again if it is cancelled.
+    pub(super) made_logins: Vec<Id>,
     /// Which window asked, since the dialog has to appear in that one.
     pub(super) in_manager: bool,
     pub(super) wants_focus: bool,
@@ -826,9 +830,11 @@ impl App {
 
     /// Asks for a new session. Nothing exists until it is saved.
     pub(super) fn new_session_dialog(&mut self, ctx: &egui::Context, chrome: &Chrome) {
-        let Some(draft) = self.new_session.as_mut() else {
+        // Out of `self` while it is drawn, so the login form below can borrow `self`.
+        let Some(mut draft) = self.new_session.take() else {
             return;
         };
+        let draft = &mut draft;
         let name_id = egui::Id::unique("linecon-new-session-name");
         let folders = folder_choices(&self.config.nodes);
         let mut outcome = None;
@@ -863,6 +869,8 @@ impl App {
                     }
                 });
             combo.response.labelled_by(folder_label);
+            ui.add_space(4.0);
+            self.new_session_login(ui, draft, chrome);
             ui.add_space(12.0);
             let ready = match draft.target.protocol {
                 Protocol::Serial => !draft.target.line.trim().is_empty(),
@@ -892,11 +900,32 @@ impl App {
                 ui.memory_mut(|m| m.request_focus(name_id));
             }
         });
+        let draft = std::mem::replace(
+            draft,
+            NewSessionDraft {
+                name: String::new(),
+                target: Target::default(),
+                parent: None,
+                login: None,
+                made_logins: Vec::new(),
+                in_manager: false,
+                wants_focus: false,
+            },
+        );
         match outcome {
-            None => {}
-            Some(NewSessionOutcome::Cancel) => self.new_session = None,
+            None => self.new_session = Some(draft),
+            Some(NewSessionOutcome::Cancel) => {
+                for id in draft.made_logins {
+                    self.forget_login(id);
+                }
+            }
             Some(choice) => {
-                let draft = self.new_session.take().unwrap();
+                // Logins made here and then not chosen are not wanted either.
+                for id in &draft.made_logins {
+                    if draft.login != Some(*id) {
+                        self.forget_login(*id);
+                    }
+                }
                 let name = draft.name.trim();
                 let name = if !name.is_empty() {
                     name.to_string()
@@ -906,6 +935,9 @@ impl App {
                     draft.target.host.clone()
                 };
                 if let Some(id) = self.config.add_session(draft.parent, &name, draft.target) {
+                    if let Some(o) = self.config.overrides_mut(id) {
+                        o.identity = draft.login;
+                    }
                     self.reveal_in_tree(id);
                     self.dirty = true;
                     self.save_if_needed();
@@ -1093,6 +1125,80 @@ impl App {
                     );
                 });
         }
+    }
+
+    /// The new session dialog's login: inherit, ask each time, a saved one, or a new one.
+    fn new_session_login(&mut self, ui: &mut Ui, draft: &mut NewSessionDraft, chrome: &Chrome) {
+        let inherited = draft
+            .parent
+            .and_then(|p| self.config.resolve(p))
+            .unwrap_or_else(|| self.config.resolve_root())
+            .identity
+            .value;
+        let name_of = |id: Id| {
+            self.config
+                .identity(id)
+                .map(|i| i.name.clone())
+                .filter(|n| !n.is_empty())
+        };
+        const ASK: &str = "None: ask each time";
+        let inherit_label = match name_of(inherited) {
+            Some(name) if draft.parent.is_some() => format!("From its folder: {name}"),
+            Some(name) => format!("From global settings: {name}"),
+            None => "Inherited: ask each time".to_string(),
+        };
+        let selected = match draft.login {
+            None => inherit_label.clone(),
+            Some(0) => ASK.to_string(),
+            Some(id) => name_of(id).unwrap_or_else(|| "(unnamed)".to_string()),
+        };
+        let names: Vec<(Id, String)> = self
+            .config
+            .identities
+            .iter()
+            .map(|i| (i.id, i.name.clone()))
+            .collect();
+        let label = ui
+            .label(RichText::new("Login").size(12.0).color(chrome.muted))
+            .id;
+        ui.horizontal(|ui| {
+            let combo = egui::ComboBox::from_id_salt("new-session-login")
+                .selected_text(selected)
+                .width(ui.available_width() - 100.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut draft.login, None, inherit_label);
+                    ui.selectable_value(&mut draft.login, Some(0), ASK);
+                    for (id, name) in &names {
+                        ui.selectable_value(&mut draft.login, Some(*id), name);
+                    }
+                });
+            combo.response.labelled_by(label);
+            if ui.button("New login").clicked() {
+                let id = self.config.add_identity("New login", "");
+                draft.made_logins.push(id);
+                draft.login = Some(id);
+                self.dirty = true;
+            }
+        });
+        if let Some(id) = draft.login.filter(|id| draft.made_logins.contains(id)) {
+            Frame::new()
+                .fill(chrome.raised)
+                .corner_radius(8)
+                .inner_margin(Margin::same(10))
+                .show(ui, |ui| self.identity_form(ui, id, chrome));
+        }
+    }
+
+    /// Removes a login and any password saved for it.
+    fn forget_login(&mut self, id: Id) {
+        if let Some(identity) = self.config.identity(id).cloned() {
+            if identity.has_password {
+                let _ = self.vault.lock().unwrap().remove(&identity.secret_key());
+            }
+        }
+        self.password_drafts.remove(&id);
+        self.config.remove_identity(id);
+        self.dirty = true;
     }
 
     pub(super) fn identity_form(&mut self, ui: &mut Ui, id: Id, chrome: &Chrome) {

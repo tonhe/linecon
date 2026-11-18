@@ -220,6 +220,10 @@ impl App {
         self.selected_folder()
     }
 
+    pub fn copied_text_for_test(&self) -> Option<String> {
+        self.copied_rows.as_ref().map(|(_, text)| text.clone())
+    }
+
     pub fn start_new_session_in_selection_for_test(&mut self) {
         self.start_new_session(self.selected_folder(), false);
     }

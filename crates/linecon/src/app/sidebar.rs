@@ -19,6 +19,12 @@ pub(super) enum TreeAction {
     Delete(Id),
     Export(Id, bool),
     Move(Id, Option<Id>),
+    /// Copies the row, or every marked row with it.
+    Copy(Id),
+    /// Pastes copied rows into this row's folder. With text, it came from the keyboard, and
+    /// only counts while the clipboard still holds what the copy put there.
+    Paste(Id, Option<String>),
+    Duplicate(Id),
     /// A navigation key on a focused row, and the id the rows are made under.
     Key(Id, Key, egui::Id),
 }
@@ -65,6 +71,7 @@ pub(super) fn tree_rows(
     chrome: &Chrome,
     selected: Option<Id>,
     marked: &[Id],
+    can_paste: bool,
     scroll_to: Option<Id>,
     renaming: &mut Option<(Id, String)>,
     actions: &mut Vec<TreeAction>,
@@ -187,6 +194,16 @@ pub(super) fn tree_rows(
                     actions.push(TreeAction::Key(id, key, base));
                 }
             }
+            // Ctrl+C and Ctrl+V arrive as copy and paste, not as keys.
+            if !is_renaming {
+                for event in ui.input(|i| i.events.clone()) {
+                    match event {
+                        egui::Event::Copy => actions.push(TreeAction::Copy(id)),
+                        egui::Event::Paste(text) => actions.push(TreeAction::Paste(id, Some(text))),
+                        _ => {}
+                    }
+                }
+            }
         }
         // Tabbing onto a row selects it, as clicking does.
         if response.gained_focus() && selected != Some(id) {
@@ -251,6 +268,22 @@ pub(super) fn tree_rows(
                 actions.push(TreeAction::StartRename(id, node.name().to_string()));
                 ui.close();
             }
+            ui.separator();
+            if ui.button("Copy").clicked() {
+                actions.push(TreeAction::Copy(id));
+                ui.close();
+            }
+            if ui
+                .add_enabled(can_paste, egui::Button::new("Paste"))
+                .clicked()
+            {
+                actions.push(TreeAction::Paste(id, None));
+                ui.close();
+            }
+            if ui.button("Duplicate").clicked() {
+                actions.push(TreeAction::Duplicate(id));
+                ui.close();
+            }
             if let Node::Folder(_) = node {
                 ui.separator();
                 if ui.button("New session here").clicked() {
@@ -290,6 +323,7 @@ pub(super) fn tree_rows(
                     chrome,
                     selected,
                     marked,
+                    can_paste,
                     scroll_to,
                     renaming,
                     actions,
@@ -466,6 +500,7 @@ impl App {
                     chrome,
                     self.selected_node,
                     &self.marked,
+                    self.copied_rows.is_some(),
                     self.scroll_to_node.take(),
                     &mut self.renaming,
                     &mut actions,
@@ -495,11 +530,62 @@ impl App {
         }
     }
 
-    /// The folder new things go into: one that is selected. A selected session does not
-    /// count, since that row being highlighted says nothing about where a new one belongs.
+    /// The folder new things go into: the selected folder, or the one holding the
+    /// selected session.
     pub(super) fn selected_folder(&self) -> Option<Id> {
-        let selected = self.selected_node?;
-        matches!(self.config.find(selected)?, Node::Folder(_)).then_some(selected)
+        self.folder_at(self.selected_node?)
+    }
+
+    /// A folder row itself, or the folder a session row sits in.
+    fn folder_at(&self, id: Id) -> Option<Id> {
+        match self.config.find(id)? {
+            Node::Folder(_) => Some(id),
+            Node::Session(_) => self.config.parent_of(id).flatten(),
+        }
+    }
+
+    /// Pastes copies of `rows` into `parent`, selecting what was made.
+    fn paste_rows(&mut self, rows: &[Id], parent: Option<Id>) {
+        let mut made = Vec::new();
+        for &row in rows {
+            // A folder pasted into itself would copy the copy as it went.
+            let inside = parent.is_some_and(|p| {
+                p == row
+                    || self
+                        .config
+                        .ancestors(p)
+                        .is_some_and(|a| a.iter().any(|f| f.id == row))
+            });
+            if inside && matches!(self.config.find(row), Some(Node::Folder(_))) {
+                if let Some(id) = self
+                    .config
+                    .copy_node(row, self.config.parent_of(row).flatten())
+                {
+                    made.push(id);
+                }
+                continue;
+            }
+            if let Some(id) = self.config.copy_node(row, parent) {
+                made.push(id);
+            }
+        }
+        if made.is_empty() {
+            self.info = Some("What was copied has since been deleted.".to_string());
+            return;
+        }
+        self.dirty = true;
+        let place = parent
+            .and_then(|p| self.config.find(p))
+            .map_or("the top level".to_string(), |n| n.name().to_string());
+        self.info = Some(match made.len() {
+            1 => format!("Pasted into {place}."),
+            n => format!("Pasted {n} rows into {place}."),
+        });
+        self.marked.clear();
+        if made.len() > 1 {
+            self.marked = made.clone();
+        }
+        self.reveal_in_tree(*made.last().unwrap());
     }
 
     pub(super) fn start_new_session(&mut self, parent: Option<Id>, in_manager: bool) {
@@ -507,6 +593,8 @@ impl App {
             name: String::new(),
             target: Target::default(),
             parent,
+            login: None,
+            made_logins: Vec::new(),
             in_manager,
             wants_focus: true,
         });
@@ -598,6 +686,48 @@ impl App {
                 for id in self.group_for(id) {
                     if Some(id) != parent && self.config.move_node(id, parent, usize::MAX) {
                         self.dirty = true;
+                    }
+                }
+            }
+            TreeAction::Copy(id) => {
+                let rows = self.group_for(id);
+                let text = rows
+                    .iter()
+                    .filter_map(|r| self.config.find(*r).map(|n| n.name().to_string()))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                // On the clipboard too, so Ctrl+V has something to paste: with nothing
+                // there, Windows does not report the keys at all.
+                ctx.copy_text(text.clone());
+                let keys = if cfg!(target_os = "macos") {
+                    "⌘V"
+                } else {
+                    "Ctrl+V"
+                };
+                let what = match rows.len() {
+                    1 => text.clone(),
+                    n => format!("{n} rows"),
+                };
+                self.info = Some(format!(
+                    "Copied {what}. Paste with {keys} on a folder or session."
+                ));
+                self.copied_rows = Some((rows, text));
+            }
+            TreeAction::Paste(id, from_keys) => {
+                let Some((rows, text)) = self.copied_rows.clone() else {
+                    return;
+                };
+                if from_keys.is_some_and(|k| k.replace("\r\n", "\n") != text) {
+                    return;
+                }
+                let parent = self.folder_at(id);
+                self.paste_rows(&rows, parent);
+            }
+            TreeAction::Duplicate(id) => {
+                let rows = self.group_for(id);
+                for row in rows {
+                    if let Some(parent) = self.config.parent_of(row) {
+                        self.paste_rows(&[row], parent);
                     }
                 }
             }

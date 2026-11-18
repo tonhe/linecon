@@ -306,6 +306,9 @@ pub struct App {
     /// Rows chosen with Ctrl or Shift as well as the selected one. Moving or deleting any of
     /// them takes them all.
     marked: Vec<Id>,
+    /// Rows copied in the tree, and the text that went on the clipboard with them, so a
+    /// paste knows the clipboard still holds them.
+    copied_rows: Option<(Vec<Id>, String)>,
     /// An agent's proposal being changed before it is approved, and the text so far.
     proposal_edit: Option<(u64, String)>,
 }
@@ -574,6 +577,7 @@ impl App {
             last_focused_session: None,
             pending_delete: None,
             marked: Vec::new(),
+            copied_rows: None,
             proposal_edit: None,
             vault,
             agent_view: Arc::default(),
