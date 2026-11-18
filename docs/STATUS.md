@@ -7,7 +7,8 @@
 - Legacy test on both Linux runners against a Docker OpenSSH 6.7: group1-sha1, 3des-cbc,
   arcfour256, hmac-md5, ssh-dss, SHA-1 ssh-rsa, 1024-bit host keys and SSH-1.
 - Negotiation failures report offered versus allowed.
-- Session tree with inheritance and provenance, config persistence, portable mode.
+- Session tree with inheritance and provenance, config persistence, portable mode. Rows copy, paste and duplicate
+  (Ctrl+C / Ctrl+V or right-click). New sessions go beside the selected one and can pick or make their login.
 - Terminal window: sidebar, tabs, splits, palette, inspector, cards, themes and import, session
   logs, broadcast, search, auto-reconnect. Tested headlessly only.
 
