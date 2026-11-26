@@ -228,6 +228,22 @@ def control_keys():
     shot("keys")
 
 
+@step("the session log holds the text as shown, stamped, without escape codes")
+def session_log():
+    import glob
+    logs = [p for p in glob.glob(f"{HOME}/**/logs/**/*.log", recursive=True)
+            if "show version" in open(p, errors="replace").read()]
+    assert logs, f"no log with show version under {HOME}"
+    text = open(logs[0], errors="replace").read()
+    with open(f"{OUT}/iosxe-session.log", "w") as out:
+        out.write(text)
+    assert "\x1b" not in text, "escape codes in the log"
+    lines = text.splitlines()
+    assert all(l.startswith("[20") for l in lines), lines[:3]
+    assert any(l.endswith("#show clock") for l in lines), "no show clock line"
+    assert any("Cisco IOS" in l for l in lines), "no show version output"
+
+
 @step("a second tab connects to Arista with no empty card")
 def second_tab():
     click_xy(*QUICK_BOX)
