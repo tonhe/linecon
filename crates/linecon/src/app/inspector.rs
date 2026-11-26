@@ -325,28 +325,142 @@ fn terminal_rows(
     changed
 }
 
-fn logging_rows(ui: &mut Ui, r: &Resolved, o: &mut Overrides, chrome: &Chrome) -> bool {
+/// A text setting: what is set here, or the inherited value to start editing from.
+fn text_row(
+    ui: &mut Ui,
+    label: &str,
+    r: &linecon_config::Inherited<String>,
+    o: &mut Option<String>,
+    hint: &str,
+    chrome: &Chrome,
+) -> bool {
     let mut changed = false;
-    toggle_row!(ui, "Session logging", r.logging, o.logging, chrome, changed);
-
-    let header = row_header(ui, "Log folder", &r.log_dir, o.log_dir.is_some(), chrome);
+    let header = row_header(ui, label, r, o.is_some(), chrome);
     if header.clear {
-        o.log_dir = None;
+        *o = None;
         changed = true;
     }
-    let mut dir = o.log_dir.clone().unwrap_or_else(|| r.log_dir.value.clone());
+    let mut text = o.clone().unwrap_or_else(|| r.value.clone());
     if ui
         .add(
-            TextEdit::singleline(&mut dir)
-                .hint_text("Next to the config")
+            TextEdit::singleline(&mut text)
+                .hint_text(hint)
                 .desired_width(f32::INFINITY),
         )
         .labelled_by(header.label)
         .changed()
     {
-        o.log_dir = Some(dir);
+        *o = Some(text);
         changed = true;
     }
+    changed
+}
+
+fn logging_rows(ui: &mut Ui, r: &Resolved, o: &mut Overrides, chrome: &Chrome) -> bool {
+    let mut changed = false;
+    toggle_row!(ui, "Session logging", r.logging, o.logging, chrome, changed);
+    ui.label(
+        RichText::new(
+            "Starts a log with each connection. Log Session in the Session menu starts or \
+             stops one on an open tab either way.",
+        )
+        .size(12.0)
+        .color(chrome.muted),
+    );
+    changed |= text_row(
+        ui,
+        "Log folder",
+        &r.log_dir,
+        &mut o.log_dir,
+        "Next to the config",
+        chrome,
+    );
+    changed |= text_row(
+        ui,
+        "File name",
+        &r.log_name,
+        &mut o.log_name,
+        linecon_config::DEFAULT_LOG_NAME,
+        chrome,
+    );
+    ui.label(
+        RichText::new(crate::session_log::FIELD_HELP)
+            .size(11.0)
+            .color(chrome.muted),
+    );
+    toggle_row!(
+        ui,
+        "Add to a log with the same name",
+        r.log_append,
+        o.log_append,
+        chrome,
+        changed
+    );
+    toggle_row!(
+        ui,
+        "Raw: keep escape sequences",
+        r.log_raw,
+        o.log_raw,
+        chrome,
+        changed
+    );
+    changed |= text_row(
+        ui,
+        "Start of each line",
+        &r.log_line_prefix,
+        &mut o.log_line_prefix,
+        "Nothing",
+        chrome,
+    );
+    changed |= text_row(
+        ui,
+        "On connect",
+        &r.log_on_connect,
+        &mut o.log_on_connect,
+        "Nothing, or for example: == %S (%H) %Y-%M-%D %h:%m:%s",
+        chrome,
+    );
+    changed |= text_row(
+        ui,
+        "On disconnect",
+        &r.log_on_disconnect,
+        &mut o.log_on_disconnect,
+        "Nothing",
+        chrome,
+    );
+    let header = row_header(
+        ui,
+        "New file",
+        &r.log_rotate,
+        o.log_rotate.is_some(),
+        chrome,
+    );
+    if header.clear {
+        o.log_rotate = None;
+        changed = true;
+    }
+    let rotate = o.log_rotate.unwrap_or(r.log_rotate.value);
+    ui.horizontal(|ui| {
+        for (value, text) in [
+            (linecon_config::LogRotate::Never, "Never"),
+            (linecon_config::LogRotate::Daily, "Each day"),
+            (linecon_config::LogRotate::Hourly, "Each hour"),
+        ] {
+            if ui.selectable_label(rotate == value, text).clicked() {
+                o.log_rotate = Some(value);
+                changed = true;
+            }
+        }
+    });
+    number_row!(
+        ui,
+        "Also past this many MB (0: no limit)",
+        r.log_max_mb,
+        o.log_max_mb,
+        0..=100_000,
+        chrome,
+        changed
+    );
     changed
 }
 

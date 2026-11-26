@@ -42,7 +42,9 @@ port = 22              # optional
 - `id` values only link things within the file. Importing assigns new ones.
 - A folder's `settings` and `snippets` apply to everything beneath it. Anything left out is inherited.
 - A setting named in `settings` follows the same names as `config.toml`: `identity`, `theme`, `font_size`,
-  `scrollback_lines`, `copy_on_select`, `jump_host`, `port_forwards`, `logging`, `legacy_algorithms`,
+  `scrollback_lines`, `copy_on_select`, `jump_host`, `port_forwards`, `logging`, `log_name`, `log_append`,
+  `log_raw`, `log_line_prefix`, `log_on_connect`, `log_on_disconnect`, `log_rotate` (`never`, `daily` or
+  `hourly`), `log_max_mb`, `legacy_algorithms`,
   `cipher_order`, `kex_order`, `host_key_order`, `keepalive_secs`, `auto_reconnect`, `serial_baud`,
   `serial_data_bits`, `serial_stop_half_bits`, `serial_parity` and `serial_flow`.
 

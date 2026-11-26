@@ -33,6 +33,10 @@ pub struct Inherited<T> {
     pub source: Source,
 }
 
+/// A log per connection, named after the session and when it started.
+pub const DEFAULT_LOG_NAME: &str = "%S-%Y%M%D-%h%m%s";
+pub const DEFAULT_LOG_LINE_PREFIX: &str = "[%Y-%M-%D %h:%m:%s.%t] ";
+
 macro_rules! inheritable {
     ($($field:ident : $ty:ty = $default:expr;)*) => {
         /// Every inheritable setting, resolved.
@@ -75,6 +79,14 @@ inheritable! {
     port_forwards: Vec<String> = Vec::new();
     logging: bool = true;
     log_dir: String = String::new();
+    log_name: String = DEFAULT_LOG_NAME.to_string();
+    log_append: bool = true;
+    log_raw: bool = false;
+    log_line_prefix: String = DEFAULT_LOG_LINE_PREFIX.to_string();
+    log_on_connect: String = String::new();
+    log_on_disconnect: String = String::new();
+    log_rotate: LogRotate = LogRotate::Never;
+    log_max_mb: u32 = 0;
     legacy_algorithms: bool = false;
     cipher_order: Vec<String> = Vec::new();
     kex_order: Vec<String> = Vec::new();

@@ -172,6 +172,10 @@ pub(crate) enum Command {
     SetAppearance(Appearance),
     RunSnippet(String),
     ToggleFiles,
+    /// Starts or stops logging the focused pane.
+    ToggleLogging,
+    OpenLogFolder,
+    OpenCurrentLog,
     ToggleAgentServer,
     CheckForUpdates,
     ToggleUpdateChecks,
@@ -309,6 +313,9 @@ pub struct App {
     /// Rows copied in the tree, and the text that went on the clipboard with them, so a
     /// paste knows the clipboard still holds them.
     copied_rows: Option<(Vec<Id>, String)>,
+    /// What was last opened with the system, in tests, where nothing is.
+    #[cfg(test)]
+    revealed: Option<std::path::PathBuf>,
     /// An agent's proposal being changed before it is approved, and the text so far.
     proposal_edit: Option<(u64, String)>,
 }
@@ -578,6 +585,8 @@ impl App {
             pending_delete: None,
             marked: Vec::new(),
             copied_rows: None,
+            #[cfg(test)]
+            revealed: None,
             proposal_edit: None,
             vault,
             agent_view: Arc::default(),
@@ -709,6 +718,65 @@ impl App {
         }
     }
 
+    /// Where logs go when a session does not say: its folder setting, or next to the config.
+    fn log_folder(&self) -> std::path::PathBuf {
+        let r = self
+            .focused_pane()
+            .and_then(|id| self.panes.get(&id))
+            .and_then(|e| e.pane.spec.log.as_ref().map(|l| l.dir.clone()));
+        r.unwrap_or_else(|| {
+            let root = self.config.resolve_root();
+            if root.log_dir.value.is_empty() {
+                self.location.logs_dir()
+            } else {
+                root.log_dir.value.into()
+            }
+        })
+    }
+
+    /// Opens a file or folder with whatever the system opens it with.
+    fn reveal(&mut self, path: &std::path::Path) {
+        #[cfg(test)]
+        {
+            self.revealed = Some(path.to_path_buf());
+        }
+        #[cfg(not(test))]
+        {
+            let program = if cfg!(windows) {
+                "explorer"
+            } else if cfg!(target_os = "macos") {
+                "open"
+            } else {
+                "xdg-open"
+            };
+            let started = std::process::Command::new(program)
+                .arg(path)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            if let Err(e) = started {
+                self.error = Some(format!("Could not open {}: {e}", path.display()));
+            }
+        }
+    }
+
+    fn toggle_logging(&mut self) {
+        let Some(entry) = self.focused_pane().and_then(|id| self.panes.get(&id)) else {
+            self.info = Some("Open a session first.".to_string());
+            return;
+        };
+        if entry.pane.is_logging() {
+            entry.pane.stop_log();
+            self.info = Some("Stopped logging this pane.".to_string());
+            return;
+        }
+        match entry.pane.start_log() {
+            Ok(path) => self.info = Some(format!("Logging to {}", path.display())),
+            Err(e) => self.error = Some(format!("Could not start the log: {e}")),
+        }
+    }
+
     fn spec_for(&self, name: &str, id: Option<Id>, target: &Target, user: &str) -> PaneSpec {
         let resolved = id
             .and_then(|id| self.config.resolve(id))
@@ -726,19 +794,50 @@ impl App {
     }
 
     fn spec_from(&self, name: &str, id: Option<Id>, r: &Resolved, settings: Settings) -> PaneSpec {
-        let log_dir = r.logging.value.then(|| {
-            if r.log_dir.value.is_empty() {
-                self.location.logs_dir()
-            } else {
-                r.log_dir.value.clone().into()
-            }
-        });
+        let dir = if r.log_dir.value.is_empty() {
+            self.location.logs_dir()
+        } else {
+            r.log_dir.value.clone().into()
+        };
+        let folder = id
+            .and_then(|id| self.config.ancestors(id))
+            .map(|path| {
+                path.iter()
+                    .map(|f| f.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .unwrap_or_default();
+        let field = |key: &str| settings.get(key).unwrap_or_default().to_string();
+        let host = match settings.get("SerialLine") {
+            Some(line) => line.to_string(),
+            None => field("HostName"),
+        };
+        let log = crate::session_log::LogOptions {
+            dir,
+            name: r.log_name.value.clone(),
+            append: r.log_append.value,
+            raw: r.log_raw.value,
+            line_prefix: r.log_line_prefix.value.clone(),
+            on_connect: r.log_on_connect.value.clone(),
+            on_disconnect: r.log_on_disconnect.value.clone(),
+            rotate: r.log_rotate.value,
+            max_mb: r.log_max_mb.value,
+            fields: crate::session_log::LogFields {
+                session: name.to_string(),
+                host,
+                port: field("PortNumber"),
+                user: field("UserName"),
+                folder,
+            },
+        };
         PaneSpec {
             name: name.to_string(),
             session_id: id,
             settings,
             policy: r.algorithm_policy(),
-            log_dir,
+            log: Some(log),
+            log_at_start: r.logging.value,
             scrollback: r.scrollback_lines.value as usize,
             copy_on_select: r.copy_on_select.value,
             auto_reconnect: r.auto_reconnect.value,
@@ -996,6 +1095,21 @@ impl App {
             }
             Command::ExportSnippets => self.export_snippets(),
             Command::ExportSessions { with_logins } => self.export_sessions(None, with_logins),
+            Command::ToggleLogging => self.toggle_logging(),
+            Command::OpenLogFolder => {
+                let dir = self.log_folder();
+                let _ = std::fs::create_dir_all(&dir);
+                self.reveal(&dir);
+            }
+            Command::OpenCurrentLog => {
+                match focused
+                    .and_then(|id| self.panes.get(&id))
+                    .and_then(|e| e.pane.log_file())
+                {
+                    Some(path) => self.reveal(&path),
+                    None => self.info = Some("This pane has no log yet.".to_string()),
+                }
+            }
             Command::ToggleAgentServer => {
                 self.config.mcp_enabled = !self.config.mcp_enabled;
                 self.dirty = true;

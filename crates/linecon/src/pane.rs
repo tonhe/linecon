@@ -18,7 +18,7 @@ use linecon_engine::{
 
 use zeroize::Zeroizing;
 
-use crate::session_log::SessionLog;
+use crate::session_log::{LogOptions, SessionLog};
 use crate::terminal::{TermCore, TermSize};
 
 pub type Repaint = Arc<dyn Fn() + Send + Sync>;
@@ -31,7 +31,10 @@ pub struct PaneSpec {
     pub session_id: Option<Id>,
     pub settings: Settings,
     pub policy: AlgorithmPolicy,
-    pub log_dir: Option<PathBuf>,
+    /// How to log, whether or not it starts with the connection.
+    pub log: Option<LogOptions>,
+    /// Log from the moment it connects.
+    pub log_at_start: bool,
     pub scrollback: usize,
     pub copy_on_select: bool,
     pub auto_reconnect: bool,
@@ -121,6 +124,71 @@ pub struct PaneShared {
     lookup_done: Mutex<Option<(u64, LookupResult)>>,
     /// The device only speaks SSH-1, and the legacy toggle allows it.
     pub wants_ssh1: AtomicBool,
+    /// The log being written, shared so it can be started and stopped from the menu.
+    log: Mutex<Option<SessionLog>>,
+    /// Logging is on: a reconnect starts a new log.
+    log_wanted: AtomicBool,
+    /// The file written to most recently, still there after the log stops.
+    last_log: Mutex<Option<PathBuf>>,
+}
+
+impl PaneShared {
+    fn new(core: TermCore, status: Status, log_wanted: bool) -> Self {
+        Self {
+            core: Mutex::new(core),
+            status: Mutex::new(status),
+            pending: Mutex::new(None),
+            failure: Mutex::new(None),
+            title: Mutex::new(String::new()),
+            clipboard: Mutex::new(None),
+            local_echo: AtomicBool::new(false),
+            stop: AtomicBool::new(false),
+            ever_live: AtomicBool::new(false),
+            may_retry: AtomicBool::new(false),
+            asking_for_key: AtomicBool::new(false),
+            retry_with_key: AtomicBool::new(false),
+            key_passphrase: Mutex::new(None),
+            lookup_done: Mutex::new(None),
+            wants_ssh1: AtomicBool::new(false),
+            log: Mutex::new(None),
+            log_wanted: AtomicBool::new(log_wanted),
+            last_log: Mutex::new(None),
+        }
+    }
+
+    /// Opens a log if logging is on and none is open.
+    fn open_log(&self, options: Option<&LogOptions>) -> Result<(), String> {
+        let Some(options) = options else {
+            return Err("this session has nowhere to log to".to_string());
+        };
+        let mut log = self.log.lock().unwrap();
+        if log.is_some() || !self.log_wanted.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let opened = SessionLog::create(options.clone()).map_err(|e| e.to_string())?;
+        *self.last_log.lock().unwrap() = Some(opened.path().to_path_buf());
+        *log = Some(opened);
+        Ok(())
+    }
+
+    fn log_output(&self, data: &[u8]) {
+        let mut log = self.log.lock().unwrap();
+        let Some(open) = log.as_mut() else { return };
+        if let Err(e) = open.write(data) {
+            eprintln!("session log stopped: {e}");
+            *log = None;
+            return;
+        }
+        *self.last_log.lock().unwrap() = Some(open.path().to_path_buf());
+    }
+
+    fn close_log(&self) {
+        if let Some(log) = self.log.lock().unwrap().take() {
+            if let Err(e) = log.finish() {
+                eprintln!("could not finish the session log: {e}");
+            }
+        }
+    }
 }
 
 pub struct Pane {
@@ -147,23 +215,7 @@ fn reconnect_delay(attempts: u32) -> Duration {
 impl Pane {
     pub fn new(spec: PaneSpec, repaint: Repaint) -> Self {
         let core = TermCore::new(TermSize { cols: 80, rows: 24 }, spec.scrollback);
-        let shared = Arc::new(PaneShared {
-            core: Mutex::new(core),
-            status: Mutex::new(Status::Connecting),
-            pending: Mutex::new(None),
-            failure: Mutex::new(None),
-            title: Mutex::new(String::new()),
-            clipboard: Mutex::new(None),
-            local_echo: AtomicBool::new(false),
-            stop: AtomicBool::new(false),
-            ever_live: AtomicBool::new(false),
-            may_retry: AtomicBool::new(false),
-            asking_for_key: AtomicBool::new(false),
-            retry_with_key: AtomicBool::new(false),
-            key_passphrase: Mutex::new(None),
-            lookup_done: Mutex::new(None),
-            wants_ssh1: AtomicBool::new(false),
-        });
+        let shared = Arc::new(PaneShared::new(core, Status::Connecting, spec.log_at_start));
         let mut pane = Self {
             spec,
             shared,
@@ -186,23 +238,7 @@ impl Pane {
     #[cfg(test)]
     pub fn offline(spec: PaneSpec, repaint: Repaint) -> Self {
         let core = TermCore::new(TermSize { cols: 80, rows: 24 }, spec.scrollback);
-        let shared = Arc::new(PaneShared {
-            core: Mutex::new(core),
-            status: Mutex::new(Status::Live),
-            pending: Mutex::new(None),
-            failure: Mutex::new(None),
-            title: Mutex::new(String::new()),
-            clipboard: Mutex::new(None),
-            local_echo: AtomicBool::new(false),
-            stop: AtomicBool::new(false),
-            ever_live: AtomicBool::new(false),
-            may_retry: AtomicBool::new(false),
-            asking_for_key: AtomicBool::new(false),
-            retry_with_key: AtomicBool::new(false),
-            key_passphrase: Mutex::new(None),
-            lookup_done: Mutex::new(None),
-            wants_ssh1: AtomicBool::new(false),
-        });
+        let shared = Arc::new(PaneShared::new(core, Status::Live, spec.log_at_start));
         Self {
             spec,
             shared,
@@ -373,6 +409,29 @@ impl Pane {
         }
     }
 
+    /// Starts logging now, and after each reconnect. Returns where it is going.
+    pub fn start_log(&self) -> Result<PathBuf, String> {
+        self.shared.log_wanted.store(true, Ordering::SeqCst);
+        self.shared.open_log(self.spec.log.as_ref())?;
+        self.log_file()
+            .ok_or_else(|| "the log did not start".to_string())
+    }
+
+    /// Stops logging, until it is started again.
+    pub fn stop_log(&self) {
+        self.shared.log_wanted.store(false, Ordering::SeqCst);
+        self.shared.close_log();
+    }
+
+    pub fn is_logging(&self) -> bool {
+        self.shared.log.lock().unwrap().is_some()
+    }
+
+    /// The log being written, or the last one written.
+    pub fn log_file(&self) -> Option<PathBuf> {
+        self.shared.last_log.lock().unwrap().clone()
+    }
+
     pub fn status(&self) -> Status {
         self.shared.status.lock().unwrap().clone()
     }
@@ -518,16 +577,11 @@ impl Drop for PumpGuard {
 
 fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint: Repaint) {
     let _guard = PumpGuard(shared.clone());
-    let mut log = spec
-        .log_dir
-        .as_ref()
-        .and_then(|dir| match SessionLog::create(dir, &spec.name) {
-            Ok(log) => Some(log),
-            Err(e) => {
-                eprintln!("could not start the session log: {e}");
-                None
-            }
-        });
+    if spec.log.is_some() {
+        if let Err(e) = shared.open_log(spec.log.as_ref()) {
+            eprintln!("could not start the session log: {e}");
+        }
+    }
     let mut weak_reason = None;
     let mut sent_started = false;
     let mut tried_password = false;
@@ -540,10 +594,7 @@ fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint:
         };
         match event {
             Event::Output { data, .. } => {
-                if let Some(Err(e)) = log.as_mut().map(|l| l.write(&data)) {
-                    eprintln!("session log stopped: {e}");
-                    log = None;
-                }
+                shared.log_output(&data);
                 let out = shared.core.lock().unwrap().feed(&data);
                 if !out.replies.is_empty() {
                     session.send(&out.replies);
@@ -662,6 +713,8 @@ fn pump(session: Arc<Session>, shared: Arc<PaneShared>, spec: PaneSpec, repaint:
         }
         repaint();
     }
+    // Disconnected or closed: the disconnect line, and the file is let go.
+    shared.close_log();
 }
 
 #[cfg(test)]

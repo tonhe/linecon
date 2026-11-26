@@ -10,7 +10,7 @@ impl App {
             .and_then(|id| self.config.resolve(id))
             .unwrap_or_else(|| self.config.resolve_root());
         let mut spec = self.spec_from(name, session_id, &resolved, settings);
-        spec.log_dir = None;
+        spec.log = None;
         let pane = Pane::offline(spec, Arc::new(|| {}));
         pane.shared.core.lock().unwrap().feed(output);
         let id = self.add_pane(pane);
@@ -29,6 +29,10 @@ impl App {
         let new = self.add_pane(pane);
         let tab = &mut self.tabs[self.active_tab];
         tab.layout.split(focused, new, false);
+    }
+
+    pub fn inspect_root_for_test(&mut self) {
+        self.inspector = Some(InspectTarget::Root);
     }
 
     pub fn inspect(&mut self, id: Id) {
@@ -133,8 +137,25 @@ impl App {
     pub fn quick_open(&mut self, text: &str) {
         let (target, user) = parse_quick_connect(text).unwrap();
         let mut spec = self.spec_for(&target.host.clone(), None, &target, &user);
-        spec.log_dir = None;
+        spec.log = None;
         self.open_in_new_tab(spec);
+    }
+
+    /// Like `quick_open`, with the log settings the root gives, but not logging yet.
+    pub fn quick_open_unlogged(&mut self, text: &str) {
+        let (target, user) = parse_quick_connect(text).unwrap();
+        let mut spec = self.spec_for(&target.host.clone(), None, &target, &user);
+        spec.log_at_start = false;
+        self.open_in_new_tab(spec);
+    }
+
+    pub fn focused_log_for_test(&self) -> (bool, Option<std::path::PathBuf>) {
+        let entry = &self.panes[&self.focused_pane().unwrap()];
+        (entry.pane.is_logging(), entry.pane.log_file())
+    }
+
+    pub fn revealed_for_test(&self) -> Option<std::path::PathBuf> {
+        self.revealed.clone()
     }
 
     pub fn focused_screen_contains(&self, text: &str) -> bool {

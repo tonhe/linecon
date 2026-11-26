@@ -94,6 +94,25 @@ delete it afterwards.
 
 Drop an iTerm2 `.itermcolors` or Windows Terminal `.json` scheme on the window to import it.
 
+## Session logs
+
+Every connection is logged by default, to a `logs` folder next to the config. Session → Log Session starts or stops
+the log on an open tab, Open Current Log opens it, and Open Log Folder shows them all. In settings, under Logging, and
+per folder or session like any other setting:
+
+- **File name**: `%S` session, `%H` host, `%P` port, `%U` user, `%F` folder, `%Y` `%M` `%D` `%h` `%m` `%s` `%t` the
+  date and time. A `/` makes folders, so `%F/%S/%Y-%M-%D` keeps a folder per session and a file per day. The default is
+  `%S-%Y%M%D-%h%m%s`, a file per connection.
+- **Add to a log with the same name**, or replace it.
+- **Text or raw**: by default the log holds what the screen showed, without colours, and with a pager's `--More--`
+  and anything rubbed out removed. Raw keeps every byte as the device sent it.
+- **Start of each line**: a time stamp by default, with the same fields. Clear it for none.
+- **On connect** and **On disconnect**: lines of your own, such as `== %S (%H) %Y-%M-%D %h:%m:%s`.
+- **New file** each day or each hour, or past a size.
+
+Logs hold whatever the device printed, `show running-config` included, so treat the folder accordingly. Imported
+session files never set where logs go.
+
 ## Moving sessions
 
 In the sidebar, Ctrl+C (⌘C) on a session or folder copies it, and Ctrl+V (⌘V) on a folder, or on a session in it,

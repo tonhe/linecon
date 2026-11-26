@@ -11,5 +11,5 @@ mod store;
 
 pub use model::*;
 pub use paths::{ConfigLocation, Mode, PORTABLE_MARKER};
-pub use resolve::{Inherited, Resolved, Source};
+pub use resolve::{Inherited, Resolved, Source, DEFAULT_LOG_LINE_PREFIX, DEFAULT_LOG_NAME};
 pub use store::{encode, load, save, write, StoreError};

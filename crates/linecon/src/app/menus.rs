@@ -178,6 +178,10 @@ pub(super) fn menu_columns(updates: bool) -> Vec<MenuColumn> {
             item("Reconnect", Some(Chord::Command("R")), Command::Reconnect),
             item("Send Break", None, Command::SendBreak),
             None,
+            item("Log Session", None, Command::ToggleLogging),
+            item("Open Current Log", None, Command::OpenCurrentLog),
+            item("Open Log Folder", None, Command::OpenLogFolder),
+            None,
             item(
                 "Split Right",
                 Some(Chord::Command("D")),

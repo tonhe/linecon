@@ -33,6 +33,16 @@ pub enum Parity {
     Space,
 }
 
+/// When a session log moves on to a new file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LogRotate {
+    #[default]
+    Never,
+    Daily,
+    Hourly,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum FlowControl {
@@ -83,6 +93,27 @@ pub struct Overrides {
     pub logging: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log_dir: Option<String>,
+    /// The log's file name, with fields such as `%S` for the session and `%Y` for the year.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_name: Option<String>,
+    /// Add to a log of the same name rather than replacing it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_append: Option<bool>,
+    /// Keep escape sequences and control characters, rather than the text as shown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_raw: Option<bool>,
+    /// Written at the start of each line, with the same fields as the name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_line_prefix: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_on_connect: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_on_disconnect: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_rotate: Option<LogRotate>,
+    /// Start a new file past this many megabytes. 0 is no limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_max_mb: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub legacy_algorithms: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]

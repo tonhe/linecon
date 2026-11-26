@@ -408,7 +408,8 @@ fn saved_password_logs_in_without_asking() {
             session_id: None,
             settings: settings.clone(),
             policy: resolved.algorithm_policy(),
-            log_dir: None,
+            log: None,
+            log_at_start: false,
             scrollback: 1000,
             copy_on_select: true,
             auto_reconnect: false,
@@ -541,7 +542,8 @@ fn a_dropped_connection_reconnects_when_asked_to() {
         session_id: None,
         settings: Settings::raw("127.0.0.1", port),
         policy: AlgorithmPolicy::modern(),
-        log_dir: None,
+        log: None,
+        log_at_start: false,
         scrollback: 1000,
         copy_on_select: true,
         auto_reconnect: true,
@@ -646,7 +648,8 @@ fn legacy_toggle_reaches_an_ssh1_only_device() {
         session_id: None,
         settings: resolved.engine_settings(&target, "lab"),
         policy: resolved.algorithm_policy(),
-        log_dir: None,
+        log: None,
+        log_at_start: false,
         scrollback: 1000,
         copy_on_select: true,
         auto_reconnect: false,
@@ -689,7 +692,8 @@ fn search_finds_scrollback_and_steps_between_matches() {
         session_id: None,
         settings: linecon_engine::settings::Settings::raw("demo", 1),
         policy: AlgorithmPolicy::modern(),
-        log_dir: None,
+        log: None,
+        log_at_start: false,
         scrollback: 10_000,
         copy_on_select: true,
         auto_reconnect: false,
@@ -1423,7 +1427,8 @@ fn real_devices_through_the_window_path() {
             session_id: None,
             settings: resolved.engine_settings(&target, user),
             policy: resolved.algorithm_policy(),
-            log_dir: None,
+            log: None,
+            log_at_start: false,
             scrollback: 1000,
             copy_on_select: true,
             auto_reconnect: false,
@@ -2654,7 +2659,8 @@ fn the_trust_setting_only_covers_new_hosts() {
                 session_id: None,
                 settings,
                 policy: AlgorithmPolicy::legacy(),
-                log_dir: None,
+                log: None,
+                log_at_start: false,
                 scrollback: 1000,
                 copy_on_select: true,
                 auto_reconnect: false,
@@ -3752,4 +3758,106 @@ fn quick_ctrl_insert_copies_and_ctrl_v_with_a_picture_still_reaches_the_peer() {
         );
     }
     assert_eq!(seen, [0x16, b'x'], "{:?}", String::from_utf8_lossy(&seen));
+}
+
+/// Log Session starts a log on an open tab with the settings' name and lines, and stops it
+/// with the disconnect line written. Open Current Log and Open Log Folder point at them.
+#[test]
+fn logging_starts_and_stops_on_an_open_tab() {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        while let Ok(data) = rx.recv() {
+            if stream.write_all(&data).is_err() {
+                break;
+            }
+        }
+    });
+    let mut app = App::new(location());
+    app.config.settings.log_name = Some("%H/test-%P".into());
+    app.config.settings.log_line_prefix = Some(String::new());
+    app.config.settings.log_on_connect = Some("== start %S".into());
+    app.config.settings.log_on_disconnect = Some("== stop".into());
+    let mut h = harness(app);
+    h.run_steps(3);
+    h.state_mut()
+        .quick_open_unlogged(&format!("raw://127.0.0.1:{port}"));
+    let wait = |h: &mut Harness<'_, App>, text: &str| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !h.state().focused_screen_contains(text) {
+            assert!(std::time::Instant::now() < deadline, "never showed {text}");
+            h.step();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    };
+    tx.send(b"before\r\n".to_vec()).unwrap();
+    wait(&mut h, "before");
+    assert_eq!(h.state().focused_log_for_test(), (false, None));
+
+    let ctx = h.ctx.clone();
+    h.state_mut()
+        .run_command_for_test(&ctx, crate::app::Command::ToggleLogging);
+    let (logging, path) = h.state().focused_log_for_test();
+    assert!(logging);
+    let path = path.unwrap();
+    assert!(
+        path.ends_with(format!("127_0_0_1/test-{port}.log")),
+        "{path:?}"
+    );
+    tx.send(b"\x1b[32mshown\x1b[0m\r\nsw1#".to_vec()).unwrap();
+    wait(&mut h, "sw1#");
+    h.run_steps(2);
+    screenshot(&mut h, "logging-started");
+
+    h.state_mut()
+        .run_command_for_test(&ctx, crate::app::Command::ToggleLogging);
+    assert!(!h.state().focused_log_for_test().0);
+    tx.send(b"after\r\n".to_vec()).unwrap();
+    wait(&mut h, "after");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let host = "127.0.0.1";
+    assert_eq!(text, format!("== start {host}\nshown\nsw1#\n== stop\n"));
+
+    h.state_mut()
+        .run_command_for_test(&ctx, crate::app::Command::OpenCurrentLog);
+    assert_eq!(
+        h.state().revealed_for_test().as_deref(),
+        Some(path.as_path())
+    );
+    h.state_mut()
+        .run_command_for_test(&ctx, crate::app::Command::OpenLogFolder);
+    let folder = h.state().revealed_for_test().unwrap();
+    assert!(
+        path.starts_with(&folder) && folder.ends_with("logs"),
+        "{folder:?}"
+    );
+}
+
+/// The logging options are all in the Logging section.
+#[test]
+fn logging_settings_are_all_there() {
+    let mut app = App::new(location());
+    app.inspect_root_for_test();
+    let mut h = harness(app);
+    h.run_steps(3);
+    h.get_by_label("Logging").click();
+    h.run_steps(3);
+    for label in [
+        "Session logging",
+        "Log folder",
+        "File name",
+        "Add to a log with the same name",
+        "Raw: keep escape sequences",
+        "Start of each line",
+        "On connect",
+        "On disconnect",
+        "New file",
+    ] {
+        assert!(h.query_by_label(label).is_some(), "{label}");
+    }
+    assert!(h.query_by_label("Each day").is_some());
+    screenshot(&mut h, "settings-logging");
 }

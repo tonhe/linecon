@@ -67,6 +67,17 @@ impl App {
         add("Reconnect", &shortcut("R"), Command::Reconnect);
         add("Send break", "console", Command::SendBreak);
         add("File browser (SFTP)", &shortcut("S"), Command::ToggleFiles);
+        let logging = self
+            .focused_pane()
+            .and_then(|id| self.panes.get(&id))
+            .is_some_and(|e| e.pane.is_logging());
+        if logging {
+            add("Stop logging this pane", "", Command::ToggleLogging);
+        } else {
+            add("Start logging this pane", "", Command::ToggleLogging);
+        }
+        add("Open current log", "", Command::OpenCurrentLog);
+        add("Open log folder", "", Command::OpenLogFolder);
         let server = if self.config.mcp_enabled {
             "Agent access: stop the server"
         } else {
